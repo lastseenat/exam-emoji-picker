@@ -6,7 +6,7 @@ Sélecteur rapide d’émojis pour les cellules d’examens complémentaires dan
 
 Dans une note Markdown, placez le curseur dans la cellule concernée et utilisez la commande `Choisir un émoji d’examen`.
 
-Le sélecteur propose : 🧪, 🔊, ☣️, 🫙, 📡 et 🧲.
+Le sélecteur propose : 🧪, 🔊, ☣️, 🫙, 📡, 🧲 et 🩻.
 
 Dans le modèle d’hospitalisation, un bouton `＋` ouvre directement cette liste.
 

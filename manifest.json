@@ -1,9 +1,1 @@
-{
-  "id": "exam-emoji-picker",
-  "name": "Exam Emoji Picker",
-  "version": "1.0.0",
-  "minAppVersion": "1.5.0",
-  "description": "Sélecteur rapide d’émojis pour les examens complémentaires.",
-  "author": "lastseenat",
-  "isDesktopOnly": false
-}
+{"id":"exam-emoji-picker","name":"Exam Emoji Picker","version":"1.0.1","minAppVersion":"1.5.0","description":"Sélecteur rapide d’émojis pour les examens complémentaires.","author":"lastseenat","isDesktopOnly":false}
