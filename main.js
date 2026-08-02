@@ -2,6 +2,8 @@ const { MarkdownView, Modal, Notice, Plugin } = require("obsidian");
 
 const EXAM_BUTTON_PATTERN =
   /<button class="exam-emoji-inline-picker" data-exam-emoji-picker>(.*?)<\/button>/;
+const EXAM_BUTTON_HTML =
+  '<button class="exam-emoji-inline-picker" data-exam-emoji-picker></button>';
 
 const EXAM_EMOJIS = [
   ["🧪", "Biologie"],
@@ -60,6 +62,18 @@ class ExamEmojiModal extends Modal {
 
 module.exports = class ExamEmojiPickerPlugin extends Plugin {
   async onload() {
+    this.registerEvent(
+      this.app.workspace.on("editor-change", (editor, markdownView) => {
+        if (!markdownView) return;
+
+        const source = editor.getValue();
+        const updated = addPickersToExamRows(source);
+        if (updated === source) return;
+
+        editor.setValue(updated);
+      })
+    );
+
     this.registerDomEvent(document, "click", (event) => {
       const button = event.target.closest?.(
         "button.exam-emoji-inline-picker[data-exam-emoji-picker]"
@@ -102,3 +116,43 @@ module.exports = class ExamEmojiPickerPlugin extends Plugin {
     });
   }
 };
+
+function addPickersToExamRows(source) {
+  const lines = source.split("\n");
+  let inExamTable = false;
+  let changed = false;
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index];
+    const normalized = line
+      .replace(/^#+\s*/, "")
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .toLowerCase();
+
+    if (line.trimStart().startsWith("#")) {
+      inExamTable = normalized.includes("examens complementaires");
+      continue;
+    }
+
+    if (!inExamTable) continue;
+    if (!line.trim().startsWith("|")) {
+      if (line.trim() !== "") inExamTable = false;
+      continue;
+    }
+
+    // Ignore the header separator and rows that already have a picker.
+    if (/^\s*\|\s*:?-{3,}/.test(line) || line.includes("data-exam-emoji-picker")) {
+      continue;
+    }
+
+    // Add the picker only when the first cell of a new row is empty.
+    const updatedLine = line.replace(/^(\s*\|)\s*(?=\|)/, `$1 ${EXAM_BUTTON_HTML} `);
+    if (updatedLine !== line) {
+      lines[index] = updatedLine;
+      changed = true;
+    }
+  }
+
+  return changed ? lines.join("\n") : source;
+}
