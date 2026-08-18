@@ -2,6 +2,8 @@ const { MarkdownView, Modal, Notice, Plugin } = require("obsidian");
 
 const EXAM_BUTTON_PATTERN =
   /<button class="exam-emoji-inline-picker" data-exam-emoji-picker>(.*?)<\/button>/;
+const EXAM_BUTTON_PATTERN_GLOBAL =
+  /<button class="exam-emoji-inline-picker" data-exam-emoji-picker>(.*?)<\/button>/g;
 const EXAM_BUTTON_HTML =
   '<button class="exam-emoji-inline-picker" data-exam-emoji-picker></button>';
 
@@ -83,23 +85,36 @@ module.exports = class ExamEmojiPickerPlugin extends Plugin {
       event.preventDefault();
       event.stopPropagation();
 
-      const view = this.app.workspace.getActiveViewOfType(MarkdownView);
+      const view = this.app.workspace
+        .getLeavesOfType("markdown")
+        .map((leaf) => leaf.view)
+        .find(
+          (candidate) =>
+            candidate instanceof MarkdownView && candidate.containerEl.contains(button)
+        ) || this.app.workspace.getActiveViewOfType(MarkdownView);
       if (!view) {
         new Notice("Ouvrez la note en mode lecture ou aperçu.");
         return;
       }
 
+      const targetIndex = Array.from(
+        view.containerEl.querySelectorAll(
+          "button.exam-emoji-inline-picker[data-exam-emoji-picker]"
+        )
+      ).indexOf(button);
+      if (targetIndex < 0) {
+        new Notice("Le bouton d’examen est introuvable dans cette vue.");
+        return;
+      }
+
       new ExamEmojiModal(this.app, (emoji) => {
         const source = view.editor.getValue();
-        if (!EXAM_BUTTON_PATTERN.test(source)) {
+        const updated = replaceExamButtonAt(source, targetIndex, emoji);
+        if (updated === source) {
           new Notice("Le bouton d’examen est introuvable dans cette note.");
           return;
         }
 
-        const updated = source.replace(
-          EXAM_BUTTON_PATTERN,
-          `<button class="exam-emoji-inline-picker" data-exam-emoji-picker>${emoji}</button>`
-        );
         view.editor.setValue(updated);
       }).open();
     });
@@ -155,4 +170,21 @@ function addPickersToExamRows(source) {
   }
 
   return changed ? lines.join("\n") : source;
+}
+
+function replaceExamButtonAt(source, targetIndex, emoji) {
+  let currentIndex = 0;
+  let replaced = false;
+  EXAM_BUTTON_PATTERN_GLOBAL.lastIndex = 0;
+
+  const updated = source.replace(EXAM_BUTTON_PATTERN_GLOBAL, (match) => {
+    const index = currentIndex;
+    currentIndex += 1;
+    if (index !== targetIndex) return match;
+
+    replaced = true;
+    return `<button class="exam-emoji-inline-picker" data-exam-emoji-picker>${emoji}</button>`;
+  });
+
+  return replaced ? updated : source;
 }
