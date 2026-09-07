@@ -1,7 +1,9 @@
 const { MarkdownView, Modal, Notice, Plugin } = require("obsidian");
 
 const EXAM_BUTTON_PATTERN =
-  /<button class="exam-emoji-inline-picker" data-exam-emoji-picker(?: data-exam-picker-id="([a-zA-Z0-9-]+)")?>(.*?)<\/button>/g;
+  /<button class="exam-emoji-inline-picker" data-exam-emoji-picker>(.*?)<\/button>/;
+const EXAM_BUTTON_PATTERN_GLOBAL =
+  /<button class="exam-emoji-inline-picker" data-exam-emoji-picker>(.*?)<\/button>/g;
 const EXAM_BUTTON_HTML =
   '<button class="exam-emoji-inline-picker" data-exam-emoji-picker></button>';
 
@@ -13,7 +15,6 @@ const EXAM_EMOJIS = [
   ["📡", "Imagerie"],
   ["🧲", "IRM"],
   ["🩻", "Radiographie"],
-  ["🫀", "Cardiologie"],
 ];
 
 class ExamEmojiModal extends Modal {
@@ -49,7 +50,6 @@ class ExamEmojiModal extends Modal {
     this.scope.register([], "5", () => this.insertEmoji(EXAM_EMOJIS[4][0]));
     this.scope.register([], "6", () => this.insertEmoji(EXAM_EMOJIS[5][0]));
     this.scope.register([], "7", () => this.insertEmoji(EXAM_EMOJIS[6][0]));
-    this.scope.register([], "8", () => this.insertEmoji(EXAM_EMOJIS[7][0]));
   }
 
   insertEmoji(emoji) {
@@ -64,28 +64,15 @@ class ExamEmojiModal extends Modal {
 
 module.exports = class ExamEmojiPickerPlugin extends Plugin {
   async onload() {
-    const prepareView = (view) => {
-      if (!(view instanceof MarkdownView) || !view.file) return;
-      const editor = view.editor;
-      const source = editor.getValue();
-      const updated = ensurePickerIds(addPickersToExamRows(source));
-      if (updated === source) return;
-      const selections = editor.listSelections();
-      editor.replaceRange(updated, { line: 0, ch: 0 }, editor.offsetToPos(source.length));
-      editor.setSelections(selections);
-    };
-    this.app.workspace.onLayoutReady(() => {
-      this.app.workspace.getLeavesOfType("markdown").forEach((leaf) => prepareView(leaf.view));
-    });
-    this.registerEvent(this.app.workspace.on("active-leaf-change", (leaf) => prepareView(leaf?.view)));
-    this.registerEvent(this.app.workspace.on("file-open", () => {
-      prepareView(this.app.workspace.getActiveViewOfType(MarkdownView));
-    }));
     this.registerEvent(
       this.app.workspace.on("editor-change", (editor, markdownView) => {
         if (!markdownView) return;
 
-        prepareView(markdownView);
+        const source = editor.getValue();
+        const updated = addPickersToExamRows(source);
+        if (updated === source) return;
+
+        editor.setValue(updated);
       })
     );
 
@@ -98,39 +85,37 @@ module.exports = class ExamEmojiPickerPlugin extends Plugin {
       event.preventDefault();
       event.stopPropagation();
 
-      const view = this.app.workspace.getLeavesOfType("markdown")
+      const view = this.app.workspace
+        .getLeavesOfType("markdown")
         .map((leaf) => leaf.view)
-        .find((candidate) => candidate.containerEl.contains(button));
+        .find(
+          (candidate) =>
+            candidate instanceof MarkdownView && candidate.containerEl.contains(button)
+        ) || this.app.workspace.getActiveViewOfType(MarkdownView);
       if (!view) {
         new Notice("Ouvrez la note en mode lecture ou aperçu.");
         return;
       }
 
-      const pickerId = button.getAttribute("data-exam-picker-id");
-      const filePath = view.file?.path;
-      if (!pickerId) {
-        prepareView(view);
-        new Notice("Boutons actualisés : cliquez à nouveau sur la cellule souhaitée.");
+      const targetIndex = Array.from(
+        view.containerEl.querySelectorAll(
+          "button.exam-emoji-inline-picker[data-exam-emoji-picker]"
+        )
+      ).indexOf(button);
+      if (targetIndex < 0) {
+        new Notice("Le bouton d’examen est introuvable dans cette vue.");
         return;
       }
+
       new ExamEmojiModal(this.app, (emoji) => {
-        if (view.file?.path !== filePath) {
-          new Notice("La note a changé. Rouvrez le sélecteur dans la cellule souhaitée.");
-          return;
-        }
         const source = view.editor.getValue();
-        const matches = [...source.matchAll(EXAM_BUTTON_PATTERN)].filter((match) => match[1] === pickerId);
-        if (matches.length !== 1) {
+        const updated = replaceExamButtonAt(source, targetIndex, emoji);
+        if (updated === source) {
           new Notice("Le bouton d’examen est introuvable dans cette note.");
           return;
         }
 
-        const match = matches[0];
-        view.editor.replaceRange(
-          `<button class="exam-emoji-inline-picker" data-exam-emoji-picker data-exam-picker-id="${pickerId}">${emoji}</button>`,
-          view.editor.offsetToPos(match.index),
-          view.editor.offsetToPos(match.index + match[0].length)
-        );
+        view.editor.setValue(updated);
       }).open();
     });
 
@@ -146,19 +131,6 @@ module.exports = class ExamEmojiPickerPlugin extends Plugin {
     });
   }
 };
-
-function ensurePickerIds(source) {
-  const seen = new Set();
-  return source.replace(EXAM_BUTTON_PATTERN, (html, id, content) => {
-    if (id && !seen.has(id)) {
-      seen.add(id);
-      return html;
-    }
-    const newId = globalThis.crypto.randomUUID();
-    seen.add(newId);
-    return `<button class="exam-emoji-inline-picker" data-exam-emoji-picker data-exam-picker-id="${newId}">${content}</button>`;
-  });
-}
 
 function addPickersToExamRows(source) {
   const lines = source.split("\n");
@@ -198,4 +170,21 @@ function addPickersToExamRows(source) {
   }
 
   return changed ? lines.join("\n") : source;
+}
+
+function replaceExamButtonAt(source, targetIndex, emoji) {
+  let currentIndex = 0;
+  let replaced = false;
+  EXAM_BUTTON_PATTERN_GLOBAL.lastIndex = 0;
+
+  const updated = source.replace(EXAM_BUTTON_PATTERN_GLOBAL, (match) => {
+    const index = currentIndex;
+    currentIndex += 1;
+    if (index !== targetIndex) return match;
+
+    replaced = true;
+    return `<button class="exam-emoji-inline-picker" data-exam-emoji-picker>${emoji}</button>`;
+  });
+
+  return replaced ? updated : source;
 }
