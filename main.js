@@ -15,6 +15,7 @@ const EXAM_EMOJIS = [
   ["📡", "Imagerie"],
   ["🧲", "IRM"],
   ["🩻", "Radiographie"],
+  ["🫀", "Cardiologie"],
 ];
 
 class ExamEmojiModal extends Modal {
@@ -50,6 +51,7 @@ class ExamEmojiModal extends Modal {
     this.scope.register([], "5", () => this.insertEmoji(EXAM_EMOJIS[4][0]));
     this.scope.register([], "6", () => this.insertEmoji(EXAM_EMOJIS[5][0]));
     this.scope.register([], "7", () => this.insertEmoji(EXAM_EMOJIS[6][0]));
+    this.scope.register([], "8", () => this.insertEmoji(EXAM_EMOJIS[7][0]));
   }
 
   insertEmoji(emoji) {
