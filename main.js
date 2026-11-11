@@ -8,7 +8,7 @@ const EXAM_BUTTON_HTML =
   '<button class="exam-emoji-inline-picker" data-exam-emoji-picker></button>';
 
 const EXAM_EMOJIS = [
-  ["🧪", "Biologie"],
+  ["🧪", "Biochimie"],
   ["🔊", "Échographie"],
   ["☣️", "Microbiologie"],
   ["🫙", "Prélèvement"],
@@ -16,6 +16,8 @@ const EXAM_EMOJIS = [
   ["🧲", "IRM"],
   ["🩻", "Radiographie"],
   ["🫀", "Cardiologie"],
+  ["🩸", "Hématologie"],
+  ["🧂", "Ionogramme"],
 ];
 
 class ExamEmojiModal extends Modal {
@@ -36,7 +38,7 @@ class ExamEmojiModal extends Modal {
         attr: {
           type: "button",
           "aria-label": label,
-          title: `${index + 1} — ${label}`,
+          title: `${(index + 1) % 10} — ${label}`,
         },
       });
       button.createSpan({ cls: "exam-emoji-symbol", text: emoji });
@@ -52,6 +54,8 @@ class ExamEmojiModal extends Modal {
     this.scope.register([], "6", () => this.insertEmoji(EXAM_EMOJIS[5][0]));
     this.scope.register([], "7", () => this.insertEmoji(EXAM_EMOJIS[6][0]));
     this.scope.register([], "8", () => this.insertEmoji(EXAM_EMOJIS[7][0]));
+    this.scope.register([], "9", () => this.insertEmoji(EXAM_EMOJIS[8][0]));
+    this.scope.register([], "0", () => this.insertEmoji(EXAM_EMOJIS[9][0]));
   }
 
   insertEmoji(emoji) {
