@@ -1,0 +1,78 @@
+/* Masque les détails d'un examen tant que sa case principale n'est pas cochée. */
+.markdown-rendered li.task-list-item:not(.is-checked) > ul > li:not(.task-list-item),
+.markdown-preview-view li.task-list-item:not(.is-checked) > ul > li:not(.task-list-item),
+.markdown-rendered li:has(input[type="checkbox"]):not(:has(input[type="checkbox"]:checked)) > ul > li:not(.task-list-item),
+.markdown-preview-view li:has(input[type="checkbox"]):not(:has(input[type="checkbox"]:checked)) > ul > li:not(.task-list-item) {
+  display: none !important;
+}
+
+/* Même comportement dans l'éditeur en aperçu direct. */
+.markdown-source-view.mod-cm6 .HyperMD-task-line:not(:has(input[type="checkbox"]:checked, .task-list-item-checkbox.is-checked, .task-list-item-checkbox[data-task="x"], .task-list-item-checkbox[data-task="X"])) + .HyperMD-list-line.HyperMD-list-line-2:not(.HyperMD-task-line),
+.markdown-source-view.mod-cm6 .HyperMD-task-line:not(:has(input[type="checkbox"]:checked, .task-list-item-checkbox.is-checked, .task-list-item-checkbox[data-task="x"], .task-list-item-checkbox[data-task="X"])) + .cm-line.HyperMD-list-line.HyperMD-list-line-2:not(.HyperMD-task-line) {
+  display: none !important;
+}
+
+/* Observation psychiatrique : repères alignés à droite sous leur saisie. */
+.markdown-rendered .callout[data-callout="psy-observation"],
+.markdown-source-view.mod-cm6 .callout[data-callout="psy-observation"] {
+  --callout-color: 70, 135, 220;
+  --callout-icon: lucide-info;
+  box-sizing: border-box;
+  float: none;
+  width: min(68%, 38rem);
+  margin: 0.4rem auto 0.85rem;
+  font-size: 0.9em;
+  background: rgba(70, 135, 220, 0.10);
+  border-color: rgba(70, 135, 220, 0.45);
+}
+
+.callout[data-callout="psy-observation"] .callout-title {
+  color: rgb(42, 102, 182);
+}
+
+.callout[data-callout="psy-observation"] .callout-content {
+  padding-top: 0.2rem;
+}
+
+.callout[data-callout="psy-observation"] .callout-content p,
+.callout[data-callout="psy-observation"] .callout-content ul {
+  margin-block: 0.25rem;
+}
+
+.callout[data-callout="psy-observation"] .callout-content li {
+  margin-block: 0.1rem;
+}
+
+/* En aperçu direct, Obsidian ajoute un conteneur autour du callout. */
+.markdown-source-view.mod-cm6 .cm-embed-block:has(.callout[data-callout="psy-observation"]) {
+  box-sizing: border-box;
+  float: none;
+  width: auto;
+  margin: 0.5rem 0 1rem;
+}
+
+.markdown-source-view.mod-cm6 .cm-embed-block:has(.callout[data-callout="psy-observation"]) .callout[data-callout="psy-observation"] {
+  float: none;
+  width: min(68%, 38rem);
+  margin: 0 auto;
+}
+
+@media (max-width: 900px) {
+  .markdown-rendered .callout[data-callout="psy-observation"],
+  .markdown-source-view.mod-cm6 .callout[data-callout="psy-observation"] {
+    float: none;
+    width: auto;
+    margin-left: 0;
+  }
+
+  .markdown-source-view.mod-cm6 .cm-embed-block:has(.callout[data-callout="psy-observation"]) {
+    float: none;
+    width: auto;
+    margin-left: 0;
+  }
+
+  .markdown-source-view.mod-cm6 .cm-embed-block:has(.callout[data-callout="psy-observation"]) .callout[data-callout="psy-observation"] {
+    width: auto;
+    margin-left: 0;
+  }
+}

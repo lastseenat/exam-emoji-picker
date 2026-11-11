@@ -1,0 +1,27 @@
+/* Bouton Copier : icône « copier », calée à droite de la page */
+.copy-buttons-btn.clickable-icon {
+	--icon-size: 16px;
+	float: right;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	margin-left: 0.5em;
+	padding: 3px;
+	color: var(--text-muted);
+	cursor: pointer;
+}
+.copy-buttons-btn.clickable-icon:hover {
+	color: var(--text-normal);
+}
+.copy-buttons-btn.is-copied {
+	color: var(--color-green);
+}
+/* Dans les titres : centrée sur la hauteur de la ligne du titre */
+:is(h1, h2, h3, h4, h5, h6) > .copy-buttons-btn.clickable-icon {
+	margin-top: calc((1lh - 22px) / 2);
+}
+/* Dans les puces des jours : un peu plus petite */
+li > .copy-buttons-btn.clickable-icon {
+	--icon-size: 14px;
+	padding: 2px;
+}

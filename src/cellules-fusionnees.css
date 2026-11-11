@@ -1,0 +1,16 @@
+/* Centre les cellules fusionnées par Sheets Extended (syntaxe < ou ^) */
+table td[colspan]:not([colspan="1"]),
+table th[colspan]:not([colspan="1"]),
+table td[rowspan]:not([rowspan="1"]),
+table th[rowspan]:not([rowspan="1"]) {
+	text-align: center;
+	vertical-align: middle;
+}
+
+/* Thème sombre : titres d'encadrés (callouts) en couleur de texte normale, icône gardée en couleur */
+.theme-dark .callout .callout-title-inner {
+	color: var(--text-normal);
+}
+.theme-dark .callout[data-callout="note"] {
+	--callout-color: 120, 170, 255;
+}

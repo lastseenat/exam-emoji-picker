@@ -1,0 +1,25 @@
+/* Bouton dans la première case d'en-tête d'un tableau qui a des lignes barrées à remonter */
+.struck-rows-first-button.clickable-icon {
+  padding: 2px;
+  color: var(--text-muted);
+}
+
+.struck-rows-first-button.clickable-icon svg {
+  width: 15px;
+  height: 15px;
+}
+
+/* Mode lecture : à droite du titre du tableau */
+.struck-rows-first-button.is-reading {
+  float: right;
+  margin-inline-start: 6px;
+}
+
+/* Aperçu en direct : la case d'en-tête est déjà positionnée par Obsidian */
+.cm-table-widget .struck-rows-first-button.is-live {
+  position: absolute;
+  top: 50%;
+  right: 4px;
+  transform: translateY(-50%);
+  z-index: 2;
+}
