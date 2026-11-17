@@ -7,8 +7,9 @@ const MODULES = [
   ["copier", "Boutons Copier : à côté des titres et de chaque jour d'hospitalisation (mode lecture)"],
   ["examens", "Examens complémentaires : émoji de catégorie, bouton + et colonne Examen"],
   ["tableaux", "Tableaux : lignes barrées en haut, fusion de cases au clic droit"],
+  ["filtres", "Tableau des examens : boutons de catégorie, dates et colonne Examen fixes"],
 ];
-const STYLES = ["copier", "examens", "tableaux", "cellules-fusionnees", "details-examen-conditionnels"];
+const STYLES = ["copier", "examens", "tableaux", "cellules-fusionnees", "details-examen-conditionnels", "filtres"];
 
 const src = (file) => fs.readFileSync(path.join(__dirname, "src", file), "utf8").replace(/\r\n/g, "\n");
 

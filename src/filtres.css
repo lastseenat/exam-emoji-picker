@@ -1,0 +1,117 @@
+/* Tableau des examens : boutons de catégorie et dates/colonne Examen toujours visibles */
+.exam-filtre-barre {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  margin: 0.3rem 0 0.4rem;
+}
+.exam-filtre-bouton {
+  padding: 0.15rem 0.7rem;
+  font-size: 1.05em;
+  border-radius: 999px;
+  cursor: pointer;
+}
+.exam-filtre-bouton.is-active {
+  background: var(--interactive-accent);
+  color: var(--text-on-accent);
+}
+
+/* Le tableau défile dans son propre cadre : l'en-tête (dates) reste en haut, la colonne Examen à gauche */
+table.exam-filtrable {
+  display: block;
+  max-height: 32rem; /* même hauteur maximale pour toutes les catégories, le reste défile */
+  overflow: auto;
+}
+table.exam-filtrable thead th,
+table.exam-filtrable tr:first-child > th {
+  position: sticky !important;
+  top: 0;
+  z-index: 2;
+  background: var(--background-primary) !important; /* opaque : les lignes passent dessous sans se voir */
+  box-shadow: inset 0 -1px 0 var(--background-modifier-border);
+}
+table.exam-filtrable .exam-filtre-fixe {
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  background: var(--background-primary) !important;
+}
+table.exam-filtrable .exam-filtre-label {
+  left: var(--exam-filtre-gauche, 0px);
+  white-space: nowrap; /* émoji et nom de l'examen sur la même ligne */
+}
+table.exam-filtrable thead th.exam-filtre-fixe {
+  z-index: 3;
+}
+
+/* Tableau des jours (1re colonne « Date », repéré par le plugin) : colonnes de même largeur, ligne d'en-tête et colonne des dates figées */
+table.tableau-jours {
+  display: block; /* le tableau défile dans son propre cadre, pour que l'en-tête et les dates restent visibles */
+  max-height: 80vh;
+  overflow: auto;
+}
+table.tableau-jours th,
+table.tableau-jours td {
+  width: 17rem;
+  min-width: 17rem;
+  max-width: 17rem;
+  vertical-align: top;
+  overflow-wrap: anywhere;
+}
+table.tableau-jours th:first-child,
+table.tableau-jours td:first-child {
+  width: 7rem;
+  min-width: 7rem;
+  max-width: 7rem;
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  background: var(--background-primary) !important;
+}
+table.tableau-jours thead th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: var(--background-primary) !important;
+  box-shadow: inset 0 -1px 0 var(--background-modifier-border);
+}
+table.tableau-jours th:last-child,
+table.tableau-jours td:last-child {
+  position: sticky;
+  right: 0;
+  z-index: 1;
+  background: var(--background-primary) !important;
+  box-shadow: inset 1px 0 0 var(--background-modifier-border); /* trait de séparation avec les colonnes qui défilent */
+}
+table.tableau-jours thead th:first-child,
+table.tableau-jours thead th:last-child {
+  z-index: 3;
+}
+
+/* Teinte légère (thèmes clair et sombre) sur la colonne des dates et la colonne CAT, en-têtes compris.
+   Couleurs opaques, mélangées au fond, pour que les cases figées cachent toujours ce qui défile dessous. */
+table.tableau-jours {
+  --teinte-colonnes: color-mix(in srgb, var(--interactive-accent) 4.5%, var(--background-primary));
+}
+table.tableau-jours td:first-child,
+table.tableau-jours td:last-child {
+  background: var(--teinte-colonnes) !important;
+}
+table.tableau-jours thead th {
+  background: var(--background-primary) !important; /* en-tête des appareils : fond normal */
+}
+table.tableau-jours thead th:first-child,
+table.tableau-jours thead th:last-child {
+  background: var(--teinte-colonnes) !important; /* Date et CAT : même teinte que leur colonne */
+}
+
+/* Boutons Copier dans les cases Date et dans les dates des examens */
+.tableau-copier {
+  float: right;
+  margin: 0 0 0 0.25rem;
+  padding: 0.1rem;
+  height: auto;
+  opacity: 0.55;
+}
+.tableau-copier:hover { opacity: 1; }
+.tableau-copier svg { width: 0.9em; height: 0.9em; }
