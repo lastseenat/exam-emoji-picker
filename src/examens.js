@@ -149,6 +149,28 @@ class ExamSettingTab extends PluginSettingTab {
   }
 }
 
+// Remplace seulement la partie qui change : setValue réécrit toute la note
+// et ramène l'écran en haut à chaque frappe dans un tableau.
+function replaceKeepingView(editor, source, updated) {
+  let start = 0;
+  while (start < source.length && start < updated.length && source[start] === updated[start]) start++;
+  let endOld = source.length, endNew = updated.length;
+  while (endOld > start && endNew > start && source[endOld - 1] === updated[endNew - 1]) { endOld--; endNew--; }
+  const insert = updated.slice(start, endNew);
+  const cm = editor.cm;
+  if (cm) {
+    const top = cm.scrollDOM.scrollTop;
+    cm.dispatch({ changes: { from: start, to: endOld, insert }, scrollIntoView: false });
+    requestAnimationFrame(() => {
+      if (cm.scrollDOM.scrollTop !== top) cm.scrollDOM.scrollTop = top;
+    });
+    return;
+  }
+  const scroll = editor.getScrollInfo();
+  editor.replaceRange(insert, editor.offsetToPos(start), editor.offsetToPos(endOld));
+  editor.scrollTo(scroll.left, scroll.top);
+}
+
 module.exports = class ExamEmojiPickerPlugin extends Plugin {
   async onload() {
     this.settings = Object.assign({ exams: {} }, await this.loadData());
@@ -163,7 +185,7 @@ module.exports = class ExamEmojiPickerPlugin extends Plugin {
         const updated = addPickersToExamRows(source);
         if (updated === source) return;
 
-        editor.setValue(updated);
+        replaceKeepingView(editor, source, updated);
       })
     );
 
@@ -209,7 +231,7 @@ module.exports = class ExamEmojiPickerPlugin extends Plugin {
           return;
         }
 
-        view.editor.setValue(updated);
+        replaceKeepingView(view.editor, source, updated);
       }).open();
     });
 

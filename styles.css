@@ -290,6 +290,10 @@ table.exam-filtrable .exam-filtre-label {
 table.exam-filtrable thead th.exam-filtre-fixe {
   z-index: 3;
 }
+/* Mode modification : le tableau n'y est pas le cadre qui défile, le décalage poussait la case Examen sur la 1re date */
+.markdown-source-view table.exam-filtrable .exam-filtre-fixe {
+  left: auto !important;
+}
 
 /* Tableau des jours (1re colonne « Date », repéré par le plugin) : colonnes de même largeur, ligne d'en-tête et colonne des dates figées */
 table.tableau-jours {
