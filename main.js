@@ -1972,6 +1972,7 @@ const { Notice, Plugin, TFile, setIcon } = require("obsidian");
 
 const EMOJI = /^\s*(\p{Extended_Pictographic}️?)/u;
 const DONE = "examFiltreFait";
+const MESURE = "examFiltreMesure"; // hauteur et décalage mesurés sur le tableau affiché
 
 const textOf = (cell) => (cell.textContent || "").trim();
 
@@ -2181,6 +2182,13 @@ module.exports = class ExamFiltresPlugin extends Plugin {
   onload() {
     this.choix = new Map(); // chemin de la note -> catégorie choisie ("" = tout)
 
+    // Passage lecture <-> modification : le tableau devient visible sans que le DOM change
+    this.mesures = new WeakMap();
+    this.visibilite = new IntersectionObserver((entries) => {
+      for (const e of entries) if (e.isIntersecting && this.mesures.has(e.target)) this.mesures.get(e.target)();
+    });
+    this.register(() => this.visibilite.disconnect());
+
     this.registerMarkdownPostProcessor((el, ctx) => {
       setTimeout(() => this.scan(el, ctx.sourcePath), 0);
     });
@@ -2198,6 +2206,10 @@ module.exports = class ExamFiltresPlugin extends Plugin {
     observer.observe(this.app.workspace.containerEl, { childList: true, subtree: true });
     this.register(() => observer.disconnect());
     this.app.workspace.onLayoutReady(() => this.scanWorkspace());
+
+    const rescan = () => requestAnimationFrame(() => this.scanWorkspace());
+    this.registerEvent(this.app.workspace.on("layout-change", rescan));
+    this.registerEvent(this.app.workspace.on("active-leaf-change", rescan));
   }
 
   onunload() {
@@ -2206,6 +2218,7 @@ module.exports = class ExamFiltresPlugin extends Plugin {
     document.querySelectorAll("table.exam-filtrable").forEach((t) => {
       t.classList.remove("exam-filtrable");
       delete t.dataset[DONE];
+      delete t.dataset[MESURE];
       t.querySelectorAll("tr").forEach((tr) => (tr.style.display = ""));
       t.style.height = "";
     });
@@ -2224,7 +2237,10 @@ module.exports = class ExamFiltresPlugin extends Plugin {
       if (table.dataset[DONE]) {
         if (!table.previousElementSibling || !table.previousElementSibling.classList.contains("exam-filtre-barre")) {
           delete table.dataset[DONE]; // barre effacée par un nouveau rendu : on la remet
-        } else continue;
+        } else {
+          if (!table.dataset[MESURE] && this.mesures.has(table)) this.mesures.get(table)();
+          continue;
+        }
       }
       if (!isExamTable(table)) continue;
       this.enhance(table, path || "");
@@ -2293,8 +2309,18 @@ module.exports = class ExamFiltresPlugin extends Plugin {
       for (const { tr, cat } of rows) tr.style.display = !chosen || cat === chosen ? "" : "none";
       markLabelCells(table);
     };
-    fixHeight();
+    // Un tableau caché (l'autre mode de la note, onglet en arrière-plan) mesure 0 : on attend qu'il soit affiché
+    const measure = () => {
+      if (!table.isConnected || !table.offsetParent || !table.getClientRects().length) return;
+      fixHeight();
+      apply();
+      table.dataset[MESURE] = "1";
+      if (this.visibilite) this.visibilite.unobserve(table);
+    };
+    this.mesures.set(table, measure);
     apply();
+    measure();
+    if (!table.dataset[MESURE] && this.visibilite) this.visibilite.observe(table);
   }
 };
 
