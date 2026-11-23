@@ -8,6 +8,7 @@ const MODULES = [
   ["examens", "Examens complémentaires : émoji de catégorie, bouton + et colonne Examen"],
   ["tableaux", "Tableaux : lignes barrées en haut, fusion de cases au clic droit"],
   ["filtres", "Tableau des examens : boutons de catégorie, dates et colonne Examen fixes"],
+  ["replier", "Bouton Replier tout en haut à droite des notes"],
 ];
 const STYLES = ["copier", "examens", "tableaux", "cellules-fusionnees", "details-examen-conditionnels", "filtres"];
 
