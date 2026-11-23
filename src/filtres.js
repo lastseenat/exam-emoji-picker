@@ -217,7 +217,6 @@ function copyButton(cell, build, app, path) {
 module.exports = class ExamFiltresPlugin extends Plugin {
   onload() {
     this.choix = new Map(); // chemin de la note -> catégorie choisie ("" = tout)
-    this.hauteurs = new Map(); // chemin de la note -> hauteur mesurée du tableau des examens, réappliquée à chaque nouveau rendu
 
     // Passage lecture <-> modification : le tableau devient visible sans que le DOM change
     this.mesures = new WeakMap();
@@ -320,18 +319,6 @@ module.exports = class ExamFiltresPlugin extends Plugin {
     const bar = createDiv({ cls: "exam-filtre-barre" });
     table.parentElement.insertBefore(bar, table);
 
-    // Hauteur fixe pour toutes les catégories (celle du tableau complet, plafonnée) : le texte en dessous ne bouge plus
-    const fixHeight = () => {
-      table.style.height = "";
-      table.querySelectorAll("tbody tr").forEach((tr) => (tr.style.display = ""));
-      const max = parseFloat(getComputedStyle(table).maxHeight) || Infinity;
-      const h = Math.min(table.scrollHeight, max) + "px";
-      table.style.height = h;
-      this.hauteurs.set(path, h);
-    };
-    // Nouveau rendu du même tableau : hauteur connue posée tout de suite, pas de saut le temps de la mesure
-    if (this.hauteurs.has(path)) table.style.height = this.hauteurs.get(path);
-
     const apply = () => {
       const rows = categorize(table);
       const cats = [...new Set(rows.map((r) => r.cat).filter(Boolean))];
@@ -355,7 +342,6 @@ module.exports = class ExamFiltresPlugin extends Plugin {
     // Un tableau caché (l'autre mode de la note, onglet en arrière-plan) mesure 0 : on attend qu'il soit affiché
     const measure = () => {
       if (!table.isConnected || !table.offsetParent || !table.getClientRects().length) return;
-      fixHeight();
       apply();
       table.dataset[MESURE] = "1";
       if (this.visibilite) this.visibilite.unobserve(table);
