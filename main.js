@@ -2329,8 +2329,7 @@ const module_replier = (function () {
   const module = { exports: {} };
 const { MarkdownView, Plugin, setIcon } = require("obsidian");
 
-// Bouton en haut à droite de chaque note : replier tout / déplier tout (titres et listes).
-// Mode modification : commandes d'Obsidian. Mode lecture : clic sur les flèches de repli des titres affichés.
+// Bouton en haut à droite de chaque note : replier tout / déplier tout (titres seulement, pas les puces).
 
 const CLS = "outils-replier";
 
@@ -2362,19 +2361,40 @@ module.exports = class ReplierPlugin extends Plugin {
   }
 
   toggle(view, replie) {
-    if (view.getMode() === "source") {
-      this.app.commands.executeCommandById(replie ? "editor:fold-all" : "editor:unfold-all");
+    // État de repli de la note (le même pour les deux modes) : un repli par titre, calculé sur tout le texte,
+    // y compris la fin de la note qu'Obsidian n'a pas encore analysée ou affichée
+    const mode = view.currentMode;
+    if (mode && mode.applyFoldInfo && view.editor) {
+      const lines = view.editor.getValue().split("\n");
+      const info = { folds: replie ? headingFolds(lines) : [], lines: lines.length };
+      mode.applyFoldInfo(info);
+      if (this.app.foldManager && view.file) this.app.foldManager.save(view.file, info);
       return;
     }
-    // Mode lecture : les titres repliables affichés
-    view.previewMode.containerEl.querySelectorAll(".heading-collapse-indicator, .list-collapse-indicator").forEach((ind) => {
-      const bloc = ind.closest("h1, h2, h3, h4, h5, h6, li");
-      const section = bloc && bloc.parentElement;
-      const ferme = [ind, bloc, section].some((e) => e && e.classList.contains("is-collapsed"));
-      if (ferme !== replie) ind.click();
-    });
+    this.app.commands.executeCommandById(replie ? "editor:fold-all" : "editor:unfold-all");
   }
 };
+
+// Chaque titre replié jusqu'à la dernière ligne non vide avant le titre suivant de même niveau ou plus haut
+function headingFolds(lines) {
+  const heads = [];
+  let fence = false;
+  lines.forEach((l, i) => {
+    if (/^\s*(```|~~~)/.test(l)) fence = !fence;
+    const m = !fence && l.match(/^(#{1,6})\s/);
+    if (m) heads.push({ line: i, level: m[1].length });
+  });
+  const folds = [];
+  heads.forEach((h, k) => {
+    const next = heads.slice(k + 1).find((x) => x.level <= h.level);
+    let end = (next ? next.line : lines.length) - 1;
+    while (end > h.line && !lines[end].trim()) end--;
+    if (end > h.line) folds.push({ from: h.line, to: end });
+  });
+  return folds;
+}
+
+module.exports._test = { headingFolds };
 
   return module.exports;
 })();
