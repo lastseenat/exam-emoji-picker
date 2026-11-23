@@ -2094,7 +2094,9 @@ function dayText(ls, date) {
       } else {
         const v = plain(c[j]);
         if (!v) return;
-        parts.push(name ? "Sur le plan " + (PLAN[name.toLowerCase()] || lowerFirst(name)) + " : " + lowerFirst(v) : upperFirst(v));
+        // En-tête déjà rédigé « Sur le plan des vertiges » : on ne rajoute pas « Sur le plan »
+        const n = name.replace(/^sur le plan\s+/i, "");
+        parts.push(n ? "Sur le plan " + (PLAN[n.toLowerCase()] || lowerFirst(n)) + " : " + lowerFirst(v) : upperFirst(v));
       }
     });
     if (cat) parts.push(cat);
@@ -2181,6 +2183,7 @@ function copyButton(cell, build, app, path) {
 module.exports = class ExamFiltresPlugin extends Plugin {
   onload() {
     this.choix = new Map(); // chemin de la note -> catégorie choisie ("" = tout)
+    this.hauteurs = new Map(); // chemin de la note -> hauteur mesurée du tableau des examens, réappliquée à chaque nouveau rendu
 
     // Passage lecture <-> modification : le tableau devient visible sans que le DOM change
     this.mesures = new WeakMap();
@@ -2195,10 +2198,12 @@ module.exports = class ExamFiltresPlugin extends Plugin {
 
     // Aperçu direct : les tableaux sont rendus par l'éditeur, on les surveille
     let pending = false;
+    // Traité avant l'affichage (microtâche) : le tableau redessiné (case sélectionnée, changement de mode)
+    // n'apparaît jamais une image avec toutes ses lignes, ce qui faisait sauter la note
     const observer = new MutationObserver(() => {
       if (pending) return;
       pending = true;
-      requestAnimationFrame(() => {
+      queueMicrotask(() => {
         pending = false;
         this.scanWorkspace();
       });
@@ -2286,8 +2291,12 @@ module.exports = class ExamFiltresPlugin extends Plugin {
       table.style.height = "";
       table.querySelectorAll("tbody tr").forEach((tr) => (tr.style.display = ""));
       const max = parseFloat(getComputedStyle(table).maxHeight) || Infinity;
-      table.style.height = Math.min(table.scrollHeight, max) + "px";
+      const h = Math.min(table.scrollHeight, max) + "px";
+      table.style.height = h;
+      this.hauteurs.set(path, h);
     };
+    // Nouveau rendu du même tableau : hauteur connue posée tout de suite, pas de saut le temps de la mesure
+    if (this.hauteurs.has(path)) table.style.height = this.hauteurs.get(path);
 
     const apply = () => {
       const rows = categorize(table);
