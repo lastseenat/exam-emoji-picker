@@ -2160,11 +2160,12 @@ function copyButton(cell, build, app, path) {
   btn.addEventListener("click", async (e) => {
     e.preventDefault();
     e.stopPropagation();
-    // Texte de l'éditeur ouvert (même pas encore enregistré), sinon le fichier
+    // Texte de la note affichée autour du bouton (même pas encore enregistré) ; sinon le fichier.
+    // Pas « le premier onglet de la note trouvé » : un autre onglet ou une autre fenêtre pouvait donner une version ancienne
     let src = null;
     app.workspace.iterateAllLeaves((leaf) => {
       const v = leaf.view;
-      if (src === null && v && v.file && v.file.path === path && v.editor) src = v.editor.getValue();
+      if (src === null && v && v.file && v.file.path === path && v.editor && v.containerEl.contains(btn)) src = v.editor.getValue();
     });
     if (src === null) {
       const file = app.vault.getAbstractFileByPath(path);
@@ -2173,7 +2174,17 @@ function copyButton(cell, build, app, path) {
     }
     const text = build(src.split(/\r?\n/));
     if (!text) return void new Notice("Rien à copier");
-    await navigator.clipboard.writeText(text);
+    // Presse-papiers refusé (fenêtre sans le focus) : l'ancien contenu restait, sans message
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch (err) {
+      const ta = document.body.createEl("textarea");
+      ta.value = text;
+      ta.select();
+      const ok = document.execCommand("copy");
+      ta.remove();
+      if (!ok) return void new Notice("Copie impossible, réessayer");
+    }
     setIcon(btn, "check");
     setTimeout(() => setIcon(btn, "copy"), 1500);
   });
