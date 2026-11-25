@@ -1,4 +1,4 @@
-const { Notice, Plugin, TFile, setIcon } = require("obsidian");
+const { MarkdownView, Notice, Plugin, TFile, setIcon } = require("obsidian");
 
 // ---------- Texte à copier (même règles que le bloc « À copier » du modèle hospit) ----------
 
@@ -21,7 +21,9 @@ const upperFirst = (s) => (s ? s[0].toUpperCase() + s.slice(1) : s);
 // 1re case d'antécédent : ce qui suit un <br> (la date) passe entre parenthèses
 function atcdName(s) {
   const [main, ...more] = s.split(/<br\s*\/?>/i).map(flat).filter(Boolean);
-  return more.length ? `${main} (${more.map(lowerFirst).join(", ")})` : main || "";
+  // Date déjà écrite entre parenthèses « (06/2023) » : pas de parenthèses doublées
+  const dates = more.map((x) => lowerFirst(x.replace(/^\((.*)\)$/, "$1").trim()));
+  return more.length ? `${main} (${dates.join(", ")})` : main || "";
 }
 const BULLET = /^\s*[-*+]\s+(\[[ xX]\]\s+)?/;
 const HEADING = /^#{1,6}\s/;
@@ -57,7 +59,7 @@ function antecedents(ls) {
     const c = cells(l);
     if (isTitle(c)) {
       if (out.length) out.push(""); // ligne vide avant chaque titre sauf le premier
-      out.push(flat(c[0]).toUpperCase());
+      out.push(flat(c[0]).replace(/[\p{Extended_Pictographic}\u{FE0F}\u{200D}]/gu, "").trim().toUpperCase()); // titre sans émoji
       continue;
     }
     if (first) continue; // en-tête d'un ancien tableau (ATCD | Détails)
@@ -69,12 +71,28 @@ function antecedents(ls) {
   return out.some((l) => l.startsWith("- ")) ? out.join("\n") : "";
 }
 
-// Histoire de la maladie : section HDM telle quelle (puces gardées), sans gras
+// Histoire de la maladie : une ligne par puce principale, sans gras ;
+// ses sous-puces (et sous-sous-puces) à la suite, en phrases : « - Mercredi 25/11 : Chute. Cs SAU : souffle, 38.5. ECG en cours. »
 function histoire(ls) {
-  return ls
-    .map((l) => l.replace(/==|\*\*|__|~~/g, "").trimEnd())
-    .filter((l) => l.trim() && l.trim() !== "-")
-    .join("\n");
+  const close = (s) => (/[.!?…]$/.test(s) ? s : s + ".");
+  const out = [];
+  const avecSuite = new Set(); // lignes qui ont reçu des sous-puces : terminées par un point
+  for (const raw of ls) {
+    const l = raw.replace(/==|\*\*|__|~~/g, "").trimEnd();
+    const t = l.trim();
+    if (!t || t === "-") continue;
+    if (!/^\s/.test(l) || !out.length) {
+      out.push(t);
+      continue;
+    }
+    const s = upperFirst(t.replace(BULLET, "").trim());
+    if (!s) continue;
+    const k = out.length - 1;
+    // Après « Mercredi 25/11 : » la première phrase suit directement ; sinon la phrase précédente est close par un point
+    out[k] = /:$/.test(out[k]) ? out[k] + " " + s : close(out[k]) + " " + s;
+    avecSuite.add(k);
+  }
+  return out.map((l, k) => (avecSuite.has(k) ? close(l) : l)).join("\n");
 }
 
 // Traitement habituel : nom du médicament, et « : posologie » si la 2e colonne est remplie
@@ -89,18 +107,40 @@ function traitementHabituel(ls) {
       continue;
     }
     if (isSep(l)) continue;
+    // Tableau unique « Traitement » (pas de tableau « habituel ») : seulement les médicaments non barrés
+    if (start < 0 && /~~/.test(cells(l)[0] || "")) continue;
     const c = cells(l).map(clean);
     if (isTitle(c) || c[0] === "Nom") continue;
+    c[0] = c[0].replace(/[\p{Extended_Pictographic}\u{FE0F}\u{200D}]/gu, "").trim(); // émoji de classe devant le médicament : pas copié
     if (c[0]) names.push(c[1] ? `${c[0]} : ${c[1]}` : c[0]);
   }
   return names.join("\n");
 }
 
-// Mode de vie : tel quel, puces gardées, sans gras
+// Mode de vie : tel quel, puces gardées (sous-puces de l'Autonomie en retrait), sans gras.
+// Intitulés non renseignés retirés ; un intitulé dont seules des sous-puces sont remplies (« Autonomie : ») est gardé
 function modeDeVie(ls) {
-  return ls
-    .map((l) => (l.trim() ? l.replace(/^(\s*[-*+]\s+)(.*)$/, (m, p, t) => p.trim() + " " + clean(t).replace(/^([^:]*:\s*)(.*)$/, (x, a, b) => a + lowerFirst(b))).trim() : ""))
-    .filter((l) => l && l !== "-" && !/:\s*$/.test(l)) // intitulés non renseignés retirés
+  const items = [];
+  for (const l of ls) {
+    const m = l.match(/^(\s*)[-*+]\s+(.*)$/);
+    if (!m) {
+      if (l.trim()) items.push({ level: 0, text: clean(l), texte: true });
+      continue;
+    }
+    const level = m[1].replace(/\t/g, "    ").length >= 2 ? 1 : 0;
+    const text = clean(m[2]).replace(/^([^:]*:\s*)(.*)$/, (x, a, b) => a + lowerFirst(b)).trim();
+    if (text && text !== "-") items.push({ level, text });
+  }
+  const vide = (t) => /:\s*$/.test(t);
+  return items
+    .filter((it, k) => {
+      if (!vide(it.text)) return true;
+      if (it.level) return false;
+      // Intitulé vide : gardé seulement s'il a une sous-puce remplie
+      for (let j = k + 1; j < items.length && items[j].level > 0; j++) if (!vide(items[j].text)) return true;
+      return false;
+    })
+    .map((it) => (it.texte ? "" : it.level ? "  - " : "- ") + it.text)
     .join("\n");
 }
 
@@ -762,18 +802,104 @@ function examenEntree(srcLines) {
   return lines.map(dedupLine).join("\n").trim();
 }
 
+// ---------- Examen clinique d'entrée : Valider (texte à copier) / Retour (cases à cocher) ----------
+// Valider remplace les cases par le texte généré ; la version à cocher reste dans la note, dans un encadré replié
+// sous le texte, que Retour remet en place. Rien n'est gardé hors de la note : le retour marche sur tous les PC.
+
+// Encadré caché à l'affichage (voir copier.css) : on ne voit que le texte validé et le bouton Retour
+const ENCADRE = "> [!examen-a-cocher]- Examen à cocher";
+// L'ancien encadré [!abstract] (premières notes validées) est reconnu aussi
+const isEncadre = (l) => /^>\s*\[!(examen-a-cocher|abstract)\][-+]?\s*Examen à cocher\s*$/.test(l.trim());
+
+// Bornes de la section : du titre jusqu'au titre suivant de niveau 1 à 5 (les ###### sont des sous-parties de l'examen)
+function bornesExamen(ls) {
+  const h = ls.findIndex((l) => /^#{1,6}\s/.test(l.trim()) && /Examen clinique d'entrée/i.test(l));
+  if (h < 0) return null;
+  let e = ls.findIndex((l, i) => i > h && /^#{1,5}\s/.test(l.trim()));
+  if (e < 0) e = ls.length;
+  return { h, e };
+}
+
+// État de la section : « valide » si l'encadré de la version à cocher est là
+function etatExamen(ls) {
+  const b = bornesExamen(ls);
+  if (!b) return null;
+  return ls.slice(b.h + 1, b.e).some(isEncadre) ? "valide" : "a-cocher";
+}
+
+// Texte validé (au-dessus de l'encadré), pour le bouton Copier une fois l'examen validé
+function texteValide(ls) {
+  const b = bornesExamen(ls);
+  if (!b) return "";
+  const out = [];
+  for (let i = b.h + 1; i < b.e && !isEncadre(ls[i]); i++) if (ls[i].trim()) out.push(ls[i].trim());
+  return out.join("\n");
+}
+
+// Nouveau texte de la note, ou une chaîne d'erreur précédée de « ! »
+function validerExamen(text) {
+  const nl = text.includes("\r\n") ? "\r\n" : "\n";
+  const ls = text.split(/\r?\n/);
+  const b = bornesExamen(ls);
+  if (!b) return "!Titre « Examen clinique d'entrée » introuvable";
+  if (etatExamen(ls) === "valide") return "!Examen déjà validé";
+  const genere = examenEntree(ls);
+  if (!genere) return "!Rien de coché dans l'examen clinique d'entrée";
+  const section = ls.slice(b.h + 1, b.e);
+  while (section.length && !section[section.length - 1].trim()) section.pop();
+  while (section.length && !section[0].trim()) section.shift();
+  const encadre = [ENCADRE, ...section.map((l) => (l ? "> " + l : ">"))];
+  ls.splice(b.h + 1, b.e - b.h - 1, "", ...genere.split("\n"), "", ...encadre, "");
+  return ls.join(nl);
+}
+
+function retourExamen(text, force = false) {
+  const nl = text.includes("\r\n") ? "\r\n" : "\n";
+  const ls = text.split(/\r?\n/);
+  const b = bornesExamen(ls);
+  if (!b) return "!Titre « Examen clinique d'entrée » introuvable";
+  const d = ls.findIndex((l, i) => i > b.h && i < b.e && isEncadre(l));
+  if (d < 0) return "!Pas de version à cocher dans la note";
+  const orig = [];
+  let f = d + 1;
+  for (; f < b.e && /^>/.test(ls[f]); f++) orig.push(ls[f].replace(/^> ?/, ""));
+  // Texte validé qui ne correspond plus aux cases (corrigé à la main) : on demande avant de l'effacer (« ? » = question)
+  const norm = (arr) => arr.map((l) => l.trim()).filter(Boolean).join("\n");
+  const genere = examenEntree([ls[b.h], ...orig]);
+  if (!force && norm(ls.slice(b.h + 1, d)) !== norm(genere.split("\n")))
+    return "?Le texte validé ne correspond plus aux cases cochées (corrigé à la main ?).\n\nRevenir quand même aux cases à cocher ? Le texte validé sera remplacé.";
+  // Ce qui a été écrit sous l'encadré est gardé, après les cases
+  const suite = ls.slice(f, b.e);
+  while (suite.length && !suite[0].trim()) suite.shift();
+  while (suite.length && !suite[suite.length - 1].trim()) suite.pop();
+  ls.splice(b.h + 1, b.e - b.h - 1, "", ...orig, "", ...(suite.length ? [...suite, ""] : []));
+  return ls.join(nl);
+}
+
 const KINDS = [
   { re: /Antécédents/i, build: antecedents },
   { re: /Mode de vie/i, build: modeDeVie },
   { re: /HDM|Histoire de la maladie/i, build: histoire },
   { re: /Traitement/i, build: traitementHabituel },
-  { re: /Examen clinique d'entrée/i, build: examenEntree, wholeNote: true },
+  { re: /Examen clinique d'entrée/i, build: (ls) => (etatExamen(ls) === "valide" ? texteValide(ls) : examenEntree(ls)), wholeNote: true, examen: true },
 ];
 
 // ---------- Plugin ----------
 
 module.exports = class CopyButtonsPlugin extends Plugin {
   onload() {
+    // Mode modification (pas de bouton sur les titres) : mêmes actions par la palette de commandes
+    this.addCommand({
+      id: "valider-examen-entree",
+      name: "Valider l'examen clinique d'entrée (texte à copier)",
+      checkCallback: (checking) => this.commandeExamen(checking, validerExamen),
+    });
+    this.addCommand({
+      id: "retour-examen-entree",
+      name: "Revenir à l'examen clinique d'entrée à cocher",
+      checkCallback: (checking) => this.commandeExamen(checking, retourExamen),
+    });
+
     this.registerMarkdownPostProcessor((el, ctx) => {
       const info = ctx.getSectionInfo(el);
       if (!info) return;
@@ -789,6 +915,7 @@ module.exports = class CopyButtonsPlugin extends Plugin {
             const idx = findLine(ls, line, info.lineStart);
             return idx < 0 ? "" : kind.wholeNote ? kind.build(ls) : kind.build(sectionAt(ls, idx));
           });
+          if (kind.examen) this.addValiderButton(h, ctx.sourcePath, etatExamen(lines));
         }
       }
 
@@ -822,6 +949,81 @@ module.exports = class CopyButtonsPlugin extends Plugin {
     });
   }
 
+  commandeExamen(checking, fn) {
+    const view = this.app.workspace.getActiveViewOfType(MarkdownView);
+    if (!view || !view.file) return false;
+    if (!checking) this.modifierNote(view.file.path, fn);
+    return true;
+  }
+
+  // Bouton Valider (cases → texte) ou Retour (texte → cases) à côté du bouton Copier du titre
+  addValiderButton(h, sourcePath, etat) {
+    if (!etat || h.querySelector(":scope > .examen-valider-btn")) return;
+    const btn = createEl("button", { cls: "copy-buttons-btn examen-valider-btn clickable-icon", attr: { type: "button" } });
+    const montrer = (valide) => {
+      setIcon(btn, valide ? "undo-2" : "check-check");
+      btn.setAttr("aria-label", valide ? "Retour : remettre les cases à cocher" : "Valider : remplacer les cases par le texte à copier");
+    };
+    montrer(etat === "valide");
+    btn.addEventListener("click", async (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      // État lu au moment du clic, sur le texte même qui sera modifié : le titre n'est pas toujours redessiné après coup
+      let valide = false;
+      const basculer = (t, force) => {
+        valide = etatExamen(t.split(/\r?\n/)) === "valide";
+        return valide ? retourExamen(t, force) : validerExamen(t);
+      };
+      if (await this.modifierNote(sourcePath, basculer)) montrer(!valide);
+    });
+    h.insertBefore(btn, h.firstChild);
+  }
+
+  // Applique fn (texte, force → texte, « !erreur » ou « ?question ») à la note : par l'éditeur en mode modification
+  // (Ctrl+Z possible), sinon par le fichier. Une question est posée à l'utilisateur ; sur oui, fn est rappelée avec force
+  async modifierNote(path, fn) {
+    const appliquer = (t) => {
+      const r = fn(t, false);
+      if (!r.startsWith("?")) return r;
+      return window.confirm(r.slice(1)) ? fn(t, true) : "!";
+    };
+    const view = this.app.workspace.getLeavesOfType("markdown").map((l) => l.view)
+      .find((v) => v instanceof MarkdownView && v.file && v.file.path === path && v.getMode() === "source");
+    if (view && view.editor) {
+      const old = view.editor.getValue();
+      const neu = appliquer(old);
+      if (neu.startsWith("!")) {
+        if (neu.length > 1) new Notice(neu.slice(1));
+        return false;
+      }
+      const cm = view.editor.cm;
+      if (cm && cm.dispatch) {
+        let a = 0;
+        while (a < old.length && old[a] === neu[a]) a++;
+        let b = 0;
+        while (b < old.length - a && b < neu.length - a && old[old.length - 1 - b] === neu[neu.length - 1 - b]) b++;
+        const top = cm.scrollDOM.scrollTop;
+        cm.dispatch({ changes: { from: a, to: old.length - b, insert: neu.slice(a, neu.length - b) }, scrollIntoView: false });
+        requestAnimationFrame(() => (cm.scrollDOM.scrollTop = top));
+      } else view.editor.setValue(neu);
+      return true;
+    }
+    const file = this.app.vault.getAbstractFileByPath(path);
+    if (!(file instanceof TFile)) return false;
+    let echec = false, msg = "";
+    await this.app.vault.process(file, (t) => {
+      const r = appliquer(t);
+      if (r.startsWith("!")) {
+        echec = true;
+        msg = r.slice(1);
+        return t;
+      }
+      return r;
+    });
+    if (msg) new Notice(msg);
+    return !echec;
+  }
+
   addButton(parent, before, sourcePath, build) {
     const btn = createEl("button", { cls: "copy-buttons-btn clickable-icon", attr: { "aria-label": "Copier", type: "button" } });
     setIcon(btn, "copy");
@@ -831,7 +1033,9 @@ module.exports = class CopyButtonsPlugin extends Plugin {
       // Relire la note au clic : le texte copié est toujours celui du moment
       const file = this.app.vault.getAbstractFileByPath(sourcePath);
       if (!(file instanceof TFile)) return;
-      const ls = (await this.app.vault.read(file)).split(/\r?\n/);
+      // Pastilles d'importance (« - [!] », « 🔴 ») retirées : elles ne vont pas dans le texte copié
+      const ls = (await this.app.vault.read(file)).split(/\r?\n/)
+        .map((l) => l.replace(/^(\s*(?:>\s*)*[-*+]\s+)\[!\]\s+/, "$1").replace(/\s*🔴/g, "").replace(/<span class="pastille"><\/span>\s*/g, ""));
       const text = build(ls);
       if (!text) {
         new Notice("Rien à copier");
@@ -878,4 +1082,4 @@ function flash(btn) {
   }, 1500);
 }
 
-module.exports._test = { antecedents, traitementHabituel, modeDeVie, jour, sectionAt, examenEntree, histoire };
+module.exports._test = { validerExamen, retourExamen, texteValide, etatExamen, antecedents, traitementHabituel, modeDeVie, jour, sectionAt, examenEntree, histoire };

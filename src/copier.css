@@ -25,3 +25,8 @@ li > .copy-buttons-btn.clickable-icon {
 	--icon-size: 14px;
 	padding: 2px;
 }
+
+/* Examen clinique d'entrée validé : la version à cocher reste dans la note pour le bouton Retour, sans s'afficher */
+.callout[data-callout="examen-a-cocher"] {
+	display: none;
+}

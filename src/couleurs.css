@@ -1,0 +1,9 @@
+/* Tableau des examens : valeur sous la norme en bleu, au-dessus en rouge */
+td.bio-bas {
+  color: var(--color-blue) !important;
+  font-weight: 600;
+}
+td.bio-haut {
+  color: var(--color-red) !important;
+  font-weight: 600;
+}

@@ -82,3 +82,8 @@
   background: var(--background-modifier-hover);
   outline: none;
 }
+
+/* Le + ne sert qu'à écrire : caché en mode lecture */
+.markdown-reading-view .exam-add-button {
+  display: none;
+}

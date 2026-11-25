@@ -490,6 +490,9 @@ function addPickersToExamRows(source) {
       continue;
     }
 
+    // Ligne d'en-tête (suivie du séparateur) : pas de bouton, il n'y servait à rien (case en haut à gauche)
+    if (/^\s*\|\s*:?-{3,}/.test(lines[index + 1] || "")) continue;
+
     // Add the picker only when the first cell of a new row is empty.
     const updatedLine = line.replace(/^(\s*\|)\s*(?=\|)/, `$1 ${EXAM_BUTTON_HTML} `);
     if (updatedLine !== line) {

@@ -1,0 +1,94 @@
+/* Pastilles rouges : lignes importantes */
+
+/* Pastille grise : posée d'avance, invisible, elle apparaît au survol de sa ligne (CSS seul, sans délai) */
+.pastille-fantome {
+  display: inline-block;
+  width: 0.6em;
+  height: 0.6em;
+  border-radius: 50%;
+  background: var(--text-faint);
+  opacity: 0;
+  cursor: pointer;
+  vertical-align: 0.05em;
+}
+.pastille-fantome:hover { opacity: 1 !important; background: var(--color-red); }
+
+/* Puces (mode lecture) : dans la marge, à gauche de la puce ; survoler cette marge suffit */
+.markdown-reading-view li > .pastille-fantome {
+  position: absolute;
+  margin-inline-start: -3em;
+  margin-top: 0.25em;
+  /* zone sensible plus large que le point, jusqu'à la puce : le survol ne se perd pas entre les deux */
+  padding: 0.25em 0.7em 0.25em 0.5em;
+  background-clip: content-box;
+  width: 0.6em;
+  height: 0.6em;
+  box-sizing: content-box;
+}
+.markdown-reading-view li:hover:not(:has(li:hover)) > .pastille-fantome { opacity: 0.5; }
+
+/* Lignes de tableau : en tête de la première case, place réservée pour que le texte ne bouge pas */
+td > .pastille-fantome,
+td .pastille {
+  margin-inline-end: 0.4em;
+}
+tr:hover > td > .pastille-fantome { opacity: 0.5; }
+
+/* Pastille rouge d'une ligne de tableau marquée */
+span.pastille {
+  display: inline-block;
+  width: 0.6em;
+  height: 0.6em;
+  border-radius: 50%;
+  background: var(--color-red);
+  vertical-align: 0.05em;
+  cursor: pointer;
+}
+
+/* Mode modification, puces : pastille flottante placée à gauche de la puce survolée */
+.pastille-flottante {
+  display: none;
+  position: fixed;
+  z-index: var(--layer-popover, 30);
+  opacity: 0.5;
+}
+
+/* Puce marquée « - [!] » : la case devient une pastille rouge, le texte reste normal */
+li[data-task="!"] > input.task-list-item-checkbox,
+li[data-task="!"] > p > input.task-list-item-checkbox,
+.HyperMD-task-line[data-task="!"] input.task-list-item-checkbox {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 0.7em !important;
+  height: 0.7em !important;
+  margin-top: 0.45em;
+  border: none !important;
+  border-radius: 50% !important;
+  background: var(--color-red) !important;
+  cursor: pointer;
+}
+li[data-task="!"] > input.task-list-item-checkbox::after,
+.HyperMD-task-line[data-task="!"] input.task-list-item-checkbox::after {
+  display: none !important;
+}
+li[data-task="!"],
+.HyperMD-task-line[data-task="!"] {
+  text-decoration: none !important;
+  color: var(--text-normal) !important;
+}
+
+/* Affichage immédiat au clic, avant qu'Obsidian redessine la note */
+.markdown-reading-view li.pastille-on > .pastille-fantome { opacity: 1 !important; background: var(--color-red); }
+li.pastille-off > input.task-list-item-checkbox,
+.HyperMD-task-line.pastille-off input.task-list-item-checkbox { opacity: 0.25; }
+
+/* Mode modification : le texte de la case est dans un bloc à part ; la pastille grise est sortie du flux
+   et placée dans la marge gauche de la case, pour ne pas repousser le texte à la ligne */
+.cm-table-widget td:has(> .pastille-fantome) {
+  padding-inline-start: 1.2em;
+}
+.cm-table-widget td > .pastille-fantome {
+  position: absolute;
+  margin-inline-start: -0.95em;
+  margin-top: 0.55em;
+}

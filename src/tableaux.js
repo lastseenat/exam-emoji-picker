@@ -26,7 +26,8 @@ function isStruckCell(cell) {
     found = true;
     return "";
   });
-  return found && rest.replace(/<br\s*\/?>|&nbsp;|[*_=\s]/gi, "") === "";
+  // (la pastille 🔴 d'une ligne importante, hors du barré, ne compte pas)
+  return found && rest.replace(/<span class="pastille"><\/span>|<br\s*\/?>|&nbsp;|🔴|[*_=\s]/gi, "") === "";
 }
 
 // Une ligne est barrée quand sa première case remplie l'est (le nom du médicament, l'antécédent)
@@ -68,13 +69,33 @@ function findTables(lines) {
   return tables;
 }
 
-// Lignes barrées en haut, les autres en dessous, chacune dans son ordre d'origine
-function sortDataRows(rows) {
+// Tableaux de traitement : médicaments rangés par l'émoji de classe placé devant leur nom,
+// dans le même ordre que les parties des antécédents ; autre émoji ensuite, puis sans émoji
+const ORDRE_CLASSES = ["🦀", "🫀", "🧠", "💩", "🦴", "🫁", "🫙", "🎭", "🍬", "🍰", "🩸", "☣"]; // ☣️ antibiotiques (comparé sans le sélecteur de variante)
+const EMOJI_DEBUT = /^[\s*_~=]*(\p{Extended_Pictographic})/u;
+function rangClasse(cells) {
+  const first = (cells.find((c) => c !== "") || "").replace(/<span class="pastille"><\/span>\s*/g, "");
+  const m = first.replace(STRIKE, (x) => x.replace(/~~|<\/?(s|del|strike)>/gi, "")).match(EMOJI_DEBUT);
+  if (!m) return 1000;
+  const k = ORDRE_CLASSES.indexOf(m[1]);
+  return k < 0 ? 500 : k;
+}
+const isTraitementTable = (lines, t) => /Traitement/i.test(t.header);
+
+// Lignes barrées en haut, les autres en dessous, chacune dans son ordre d'origine.
+// Avec rank (tableaux de traitement) : d'abord par émoji de classe, puis dans chaque classe les barrées en haut,
+// à égalité dans l'ordre d'origine
+function sortDataRows(rows, rank = null) {
   const out = [];
   let groups = [];
   const flush = () => {
-    for (const g of groups.filter((g) => g.struck)) out.push(...g.lines);
-    for (const g of groups.filter((g) => !g.struck)) out.push(...g.lines);
+    if (rank) {
+      const sorted = groups.map((g, k) => [g, k]).sort((a, b) => a[0].rank - b[0].rank || b[0].struck - a[0].struck || a[1] - b[1]);
+      for (const [g] of sorted) out.push(...g.lines);
+    } else {
+      for (const g of groups.filter((g) => g.struck)) out.push(...g.lines);
+      for (const g of groups.filter((g) => !g.struck)) out.push(...g.lines);
+    }
     groups = [];
   };
   for (const line of rows) {
@@ -86,7 +107,7 @@ function sortDataRows(rows) {
       if (groups.length) groups[groups.length - 1].lines.push(line);
       else out.push(line); // collée à l'en-tête ou à une ligne titre : reste en place
     } else {
-      groups.push({ lines: [line], struck: isStruckRow(cells) });
+      groups.push({ lines: [line], struck: isStruckRow(cells), rank: rank ? rank(cells) : 0 });
     }
   }
   flush();
@@ -95,9 +116,11 @@ function sortDataRows(rows) {
 
 const dataRows = (lines, t) => lines.slice(t.start + 2, t.end);
 
+const rankFor = (lines, t) => (isTraitementTable(lines, t) ? rangClasse : null);
+
 function needsSort(lines, t) {
   const rows = dataRows(lines, t);
-  return sortDataRows(rows).some((l, k) => l !== rows[k]);
+  return sortDataRows(rows, rankFor(lines, t)).some((l, k) => l !== rows[k]);
 }
 
 // Trie les tableaux retenus par `pick` (tous par défaut) ; renvoie le texte et le nombre de tableaux modifiés
@@ -107,7 +130,7 @@ function sortTables(text, pick = () => true) {
   findTables(lines).forEach((t, index) => {
     if (!pick(t, index)) return;
     const rows = dataRows(lines, t);
-    const sorted = sortDataRows(rows);
+    const sorted = sortDataRows(rows, rankFor(lines, t));
     if (sorted.every((l, k) => l === rows[k])) return;
     lines.splice(t.start + 2, rows.length, ...sorted);
     changed++;
@@ -535,4 +558,4 @@ module.exports = class StruckRowsFirstPlugin extends Plugin {
   }
 };
 
-module.exports._internals = { findTables, sortTables, sortDataRows, needsSort, isStruckCell, splitCells, mergeRect, splitRaw };
+module.exports._internals = { rangClasse, findTables, sortTables, sortDataRows, needsSort, isStruckCell, splitCells, mergeRect, splitRaw };

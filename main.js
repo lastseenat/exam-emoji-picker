@@ -3,7 +3,7 @@
 // ===== Boutons Copier : à côté des titres et de chaque jour d'hospitalisation (mode lecture) (src/copier.js) =====
 const module_copier = (function () {
   const module = { exports: {} };
-const { Notice, Plugin, TFile, setIcon } = require("obsidian");
+const { MarkdownView, Notice, Plugin, TFile, setIcon } = require("obsidian");
 
 // ---------- Texte à copier (même règles que le bloc « À copier » du modèle hospit) ----------
 
@@ -26,7 +26,9 @@ const upperFirst = (s) => (s ? s[0].toUpperCase() + s.slice(1) : s);
 // 1re case d'antécédent : ce qui suit un <br> (la date) passe entre parenthèses
 function atcdName(s) {
   const [main, ...more] = s.split(/<br\s*\/?>/i).map(flat).filter(Boolean);
-  return more.length ? `${main} (${more.map(lowerFirst).join(", ")})` : main || "";
+  // Date déjà écrite entre parenthèses « (06/2023) » : pas de parenthèses doublées
+  const dates = more.map((x) => lowerFirst(x.replace(/^\((.*)\)$/, "$1").trim()));
+  return more.length ? `${main} (${dates.join(", ")})` : main || "";
 }
 const BULLET = /^\s*[-*+]\s+(\[[ xX]\]\s+)?/;
 const HEADING = /^#{1,6}\s/;
@@ -62,7 +64,7 @@ function antecedents(ls) {
     const c = cells(l);
     if (isTitle(c)) {
       if (out.length) out.push(""); // ligne vide avant chaque titre sauf le premier
-      out.push(flat(c[0]).toUpperCase());
+      out.push(flat(c[0]).replace(/[\p{Extended_Pictographic}\u{FE0F}\u{200D}]/gu, "").trim().toUpperCase()); // titre sans émoji
       continue;
     }
     if (first) continue; // en-tête d'un ancien tableau (ATCD | Détails)
@@ -74,12 +76,28 @@ function antecedents(ls) {
   return out.some((l) => l.startsWith("- ")) ? out.join("\n") : "";
 }
 
-// Histoire de la maladie : section HDM telle quelle (puces gardées), sans gras
+// Histoire de la maladie : une ligne par puce principale, sans gras ;
+// ses sous-puces (et sous-sous-puces) à la suite, en phrases : « - Mercredi 25/11 : Chute. Cs SAU : souffle, 38.5. ECG en cours. »
 function histoire(ls) {
-  return ls
-    .map((l) => l.replace(/==|\*\*|__|~~/g, "").trimEnd())
-    .filter((l) => l.trim() && l.trim() !== "-")
-    .join("\n");
+  const close = (s) => (/[.!?…]$/.test(s) ? s : s + ".");
+  const out = [];
+  const avecSuite = new Set(); // lignes qui ont reçu des sous-puces : terminées par un point
+  for (const raw of ls) {
+    const l = raw.replace(/==|\*\*|__|~~/g, "").trimEnd();
+    const t = l.trim();
+    if (!t || t === "-") continue;
+    if (!/^\s/.test(l) || !out.length) {
+      out.push(t);
+      continue;
+    }
+    const s = upperFirst(t.replace(BULLET, "").trim());
+    if (!s) continue;
+    const k = out.length - 1;
+    // Après « Mercredi 25/11 : » la première phrase suit directement ; sinon la phrase précédente est close par un point
+    out[k] = /:$/.test(out[k]) ? out[k] + " " + s : close(out[k]) + " " + s;
+    avecSuite.add(k);
+  }
+  return out.map((l, k) => (avecSuite.has(k) ? close(l) : l)).join("\n");
 }
 
 // Traitement habituel : nom du médicament, et « : posologie » si la 2e colonne est remplie
@@ -94,18 +112,40 @@ function traitementHabituel(ls) {
       continue;
     }
     if (isSep(l)) continue;
+    // Tableau unique « Traitement » (pas de tableau « habituel ») : seulement les médicaments non barrés
+    if (start < 0 && /~~/.test(cells(l)[0] || "")) continue;
     const c = cells(l).map(clean);
     if (isTitle(c) || c[0] === "Nom") continue;
+    c[0] = c[0].replace(/[\p{Extended_Pictographic}\u{FE0F}\u{200D}]/gu, "").trim(); // émoji de classe devant le médicament : pas copié
     if (c[0]) names.push(c[1] ? `${c[0]} : ${c[1]}` : c[0]);
   }
   return names.join("\n");
 }
 
-// Mode de vie : tel quel, puces gardées, sans gras
+// Mode de vie : tel quel, puces gardées (sous-puces de l'Autonomie en retrait), sans gras.
+// Intitulés non renseignés retirés ; un intitulé dont seules des sous-puces sont remplies (« Autonomie : ») est gardé
 function modeDeVie(ls) {
-  return ls
-    .map((l) => (l.trim() ? l.replace(/^(\s*[-*+]\s+)(.*)$/, (m, p, t) => p.trim() + " " + clean(t).replace(/^([^:]*:\s*)(.*)$/, (x, a, b) => a + lowerFirst(b))).trim() : ""))
-    .filter((l) => l && l !== "-" && !/:\s*$/.test(l)) // intitulés non renseignés retirés
+  const items = [];
+  for (const l of ls) {
+    const m = l.match(/^(\s*)[-*+]\s+(.*)$/);
+    if (!m) {
+      if (l.trim()) items.push({ level: 0, text: clean(l), texte: true });
+      continue;
+    }
+    const level = m[1].replace(/\t/g, "    ").length >= 2 ? 1 : 0;
+    const text = clean(m[2]).replace(/^([^:]*:\s*)(.*)$/, (x, a, b) => a + lowerFirst(b)).trim();
+    if (text && text !== "-") items.push({ level, text });
+  }
+  const vide = (t) => /:\s*$/.test(t);
+  return items
+    .filter((it, k) => {
+      if (!vide(it.text)) return true;
+      if (it.level) return false;
+      // Intitulé vide : gardé seulement s'il a une sous-puce remplie
+      for (let j = k + 1; j < items.length && items[j].level > 0; j++) if (!vide(items[j].text)) return true;
+      return false;
+    })
+    .map((it) => (it.texte ? "" : it.level ? "  - " : "- ") + it.text)
     .join("\n");
 }
 
@@ -767,18 +807,104 @@ function examenEntree(srcLines) {
   return lines.map(dedupLine).join("\n").trim();
 }
 
+// ---------- Examen clinique d'entrée : Valider (texte à copier) / Retour (cases à cocher) ----------
+// Valider remplace les cases par le texte généré ; la version à cocher reste dans la note, dans un encadré replié
+// sous le texte, que Retour remet en place. Rien n'est gardé hors de la note : le retour marche sur tous les PC.
+
+// Encadré caché à l'affichage (voir copier.css) : on ne voit que le texte validé et le bouton Retour
+const ENCADRE = "> [!examen-a-cocher]- Examen à cocher";
+// L'ancien encadré [!abstract] (premières notes validées) est reconnu aussi
+const isEncadre = (l) => /^>\s*\[!(examen-a-cocher|abstract)\][-+]?\s*Examen à cocher\s*$/.test(l.trim());
+
+// Bornes de la section : du titre jusqu'au titre suivant de niveau 1 à 5 (les ###### sont des sous-parties de l'examen)
+function bornesExamen(ls) {
+  const h = ls.findIndex((l) => /^#{1,6}\s/.test(l.trim()) && /Examen clinique d'entrée/i.test(l));
+  if (h < 0) return null;
+  let e = ls.findIndex((l, i) => i > h && /^#{1,5}\s/.test(l.trim()));
+  if (e < 0) e = ls.length;
+  return { h, e };
+}
+
+// État de la section : « valide » si l'encadré de la version à cocher est là
+function etatExamen(ls) {
+  const b = bornesExamen(ls);
+  if (!b) return null;
+  return ls.slice(b.h + 1, b.e).some(isEncadre) ? "valide" : "a-cocher";
+}
+
+// Texte validé (au-dessus de l'encadré), pour le bouton Copier une fois l'examen validé
+function texteValide(ls) {
+  const b = bornesExamen(ls);
+  if (!b) return "";
+  const out = [];
+  for (let i = b.h + 1; i < b.e && !isEncadre(ls[i]); i++) if (ls[i].trim()) out.push(ls[i].trim());
+  return out.join("\n");
+}
+
+// Nouveau texte de la note, ou une chaîne d'erreur précédée de « ! »
+function validerExamen(text) {
+  const nl = text.includes("\r\n") ? "\r\n" : "\n";
+  const ls = text.split(/\r?\n/);
+  const b = bornesExamen(ls);
+  if (!b) return "!Titre « Examen clinique d'entrée » introuvable";
+  if (etatExamen(ls) === "valide") return "!Examen déjà validé";
+  const genere = examenEntree(ls);
+  if (!genere) return "!Rien de coché dans l'examen clinique d'entrée";
+  const section = ls.slice(b.h + 1, b.e);
+  while (section.length && !section[section.length - 1].trim()) section.pop();
+  while (section.length && !section[0].trim()) section.shift();
+  const encadre = [ENCADRE, ...section.map((l) => (l ? "> " + l : ">"))];
+  ls.splice(b.h + 1, b.e - b.h - 1, "", ...genere.split("\n"), "", ...encadre, "");
+  return ls.join(nl);
+}
+
+function retourExamen(text, force = false) {
+  const nl = text.includes("\r\n") ? "\r\n" : "\n";
+  const ls = text.split(/\r?\n/);
+  const b = bornesExamen(ls);
+  if (!b) return "!Titre « Examen clinique d'entrée » introuvable";
+  const d = ls.findIndex((l, i) => i > b.h && i < b.e && isEncadre(l));
+  if (d < 0) return "!Pas de version à cocher dans la note";
+  const orig = [];
+  let f = d + 1;
+  for (; f < b.e && /^>/.test(ls[f]); f++) orig.push(ls[f].replace(/^> ?/, ""));
+  // Texte validé qui ne correspond plus aux cases (corrigé à la main) : on demande avant de l'effacer (« ? » = question)
+  const norm = (arr) => arr.map((l) => l.trim()).filter(Boolean).join("\n");
+  const genere = examenEntree([ls[b.h], ...orig]);
+  if (!force && norm(ls.slice(b.h + 1, d)) !== norm(genere.split("\n")))
+    return "?Le texte validé ne correspond plus aux cases cochées (corrigé à la main ?).\n\nRevenir quand même aux cases à cocher ? Le texte validé sera remplacé.";
+  // Ce qui a été écrit sous l'encadré est gardé, après les cases
+  const suite = ls.slice(f, b.e);
+  while (suite.length && !suite[0].trim()) suite.shift();
+  while (suite.length && !suite[suite.length - 1].trim()) suite.pop();
+  ls.splice(b.h + 1, b.e - b.h - 1, "", ...orig, "", ...(suite.length ? [...suite, ""] : []));
+  return ls.join(nl);
+}
+
 const KINDS = [
   { re: /Antécédents/i, build: antecedents },
   { re: /Mode de vie/i, build: modeDeVie },
   { re: /HDM|Histoire de la maladie/i, build: histoire },
   { re: /Traitement/i, build: traitementHabituel },
-  { re: /Examen clinique d'entrée/i, build: examenEntree, wholeNote: true },
+  { re: /Examen clinique d'entrée/i, build: (ls) => (etatExamen(ls) === "valide" ? texteValide(ls) : examenEntree(ls)), wholeNote: true, examen: true },
 ];
 
 // ---------- Plugin ----------
 
 module.exports = class CopyButtonsPlugin extends Plugin {
   onload() {
+    // Mode modification (pas de bouton sur les titres) : mêmes actions par la palette de commandes
+    this.addCommand({
+      id: "valider-examen-entree",
+      name: "Valider l'examen clinique d'entrée (texte à copier)",
+      checkCallback: (checking) => this.commandeExamen(checking, validerExamen),
+    });
+    this.addCommand({
+      id: "retour-examen-entree",
+      name: "Revenir à l'examen clinique d'entrée à cocher",
+      checkCallback: (checking) => this.commandeExamen(checking, retourExamen),
+    });
+
     this.registerMarkdownPostProcessor((el, ctx) => {
       const info = ctx.getSectionInfo(el);
       if (!info) return;
@@ -794,6 +920,7 @@ module.exports = class CopyButtonsPlugin extends Plugin {
             const idx = findLine(ls, line, info.lineStart);
             return idx < 0 ? "" : kind.wholeNote ? kind.build(ls) : kind.build(sectionAt(ls, idx));
           });
+          if (kind.examen) this.addValiderButton(h, ctx.sourcePath, etatExamen(lines));
         }
       }
 
@@ -827,6 +954,81 @@ module.exports = class CopyButtonsPlugin extends Plugin {
     });
   }
 
+  commandeExamen(checking, fn) {
+    const view = this.app.workspace.getActiveViewOfType(MarkdownView);
+    if (!view || !view.file) return false;
+    if (!checking) this.modifierNote(view.file.path, fn);
+    return true;
+  }
+
+  // Bouton Valider (cases → texte) ou Retour (texte → cases) à côté du bouton Copier du titre
+  addValiderButton(h, sourcePath, etat) {
+    if (!etat || h.querySelector(":scope > .examen-valider-btn")) return;
+    const btn = createEl("button", { cls: "copy-buttons-btn examen-valider-btn clickable-icon", attr: { type: "button" } });
+    const montrer = (valide) => {
+      setIcon(btn, valide ? "undo-2" : "check-check");
+      btn.setAttr("aria-label", valide ? "Retour : remettre les cases à cocher" : "Valider : remplacer les cases par le texte à copier");
+    };
+    montrer(etat === "valide");
+    btn.addEventListener("click", async (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      // État lu au moment du clic, sur le texte même qui sera modifié : le titre n'est pas toujours redessiné après coup
+      let valide = false;
+      const basculer = (t, force) => {
+        valide = etatExamen(t.split(/\r?\n/)) === "valide";
+        return valide ? retourExamen(t, force) : validerExamen(t);
+      };
+      if (await this.modifierNote(sourcePath, basculer)) montrer(!valide);
+    });
+    h.insertBefore(btn, h.firstChild);
+  }
+
+  // Applique fn (texte, force → texte, « !erreur » ou « ?question ») à la note : par l'éditeur en mode modification
+  // (Ctrl+Z possible), sinon par le fichier. Une question est posée à l'utilisateur ; sur oui, fn est rappelée avec force
+  async modifierNote(path, fn) {
+    const appliquer = (t) => {
+      const r = fn(t, false);
+      if (!r.startsWith("?")) return r;
+      return window.confirm(r.slice(1)) ? fn(t, true) : "!";
+    };
+    const view = this.app.workspace.getLeavesOfType("markdown").map((l) => l.view)
+      .find((v) => v instanceof MarkdownView && v.file && v.file.path === path && v.getMode() === "source");
+    if (view && view.editor) {
+      const old = view.editor.getValue();
+      const neu = appliquer(old);
+      if (neu.startsWith("!")) {
+        if (neu.length > 1) new Notice(neu.slice(1));
+        return false;
+      }
+      const cm = view.editor.cm;
+      if (cm && cm.dispatch) {
+        let a = 0;
+        while (a < old.length && old[a] === neu[a]) a++;
+        let b = 0;
+        while (b < old.length - a && b < neu.length - a && old[old.length - 1 - b] === neu[neu.length - 1 - b]) b++;
+        const top = cm.scrollDOM.scrollTop;
+        cm.dispatch({ changes: { from: a, to: old.length - b, insert: neu.slice(a, neu.length - b) }, scrollIntoView: false });
+        requestAnimationFrame(() => (cm.scrollDOM.scrollTop = top));
+      } else view.editor.setValue(neu);
+      return true;
+    }
+    const file = this.app.vault.getAbstractFileByPath(path);
+    if (!(file instanceof TFile)) return false;
+    let echec = false, msg = "";
+    await this.app.vault.process(file, (t) => {
+      const r = appliquer(t);
+      if (r.startsWith("!")) {
+        echec = true;
+        msg = r.slice(1);
+        return t;
+      }
+      return r;
+    });
+    if (msg) new Notice(msg);
+    return !echec;
+  }
+
   addButton(parent, before, sourcePath, build) {
     const btn = createEl("button", { cls: "copy-buttons-btn clickable-icon", attr: { "aria-label": "Copier", type: "button" } });
     setIcon(btn, "copy");
@@ -836,7 +1038,9 @@ module.exports = class CopyButtonsPlugin extends Plugin {
       // Relire la note au clic : le texte copié est toujours celui du moment
       const file = this.app.vault.getAbstractFileByPath(sourcePath);
       if (!(file instanceof TFile)) return;
-      const ls = (await this.app.vault.read(file)).split(/\r?\n/);
+      // Pastilles d'importance (« - [!] », « 🔴 ») retirées : elles ne vont pas dans le texte copié
+      const ls = (await this.app.vault.read(file)).split(/\r?\n/)
+        .map((l) => l.replace(/^(\s*(?:>\s*)*[-*+]\s+)\[!\]\s+/, "$1").replace(/\s*🔴/g, "").replace(/<span class="pastille"><\/span>\s*/g, ""));
       const text = build(ls);
       if (!text) {
         new Notice("Rien à copier");
@@ -883,7 +1087,7 @@ function flash(btn) {
   }, 1500);
 }
 
-module.exports._test = { antecedents, traitementHabituel, modeDeVie, jour, sectionAt, examenEntree, histoire };
+module.exports._test = { validerExamen, retourExamen, texteValide, etatExamen, antecedents, traitementHabituel, modeDeVie, jour, sectionAt, examenEntree, histoire };
 
   return module.exports;
 })();
@@ -1383,6 +1587,9 @@ function addPickersToExamRows(source) {
       continue;
     }
 
+    // Ligne d'en-tête (suivie du séparateur) : pas de bouton, il n'y servait à rien (case en haut à gauche)
+    if (/^\s*\|\s*:?-{3,}/.test(lines[index + 1] || "")) continue;
+
     // Add the picker only when the first cell of a new row is empty.
     const updatedLine = line.replace(/^(\s*\|)\s*(?=\|)/, `$1 ${EXAM_BUTTON_HTML} `);
     if (updatedLine !== line) {
@@ -1447,7 +1654,8 @@ function isStruckCell(cell) {
     found = true;
     return "";
   });
-  return found && rest.replace(/<br\s*\/?>|&nbsp;|[*_=\s]/gi, "") === "";
+  // (la pastille 🔴 d'une ligne importante, hors du barré, ne compte pas)
+  return found && rest.replace(/<span class="pastille"><\/span>|<br\s*\/?>|&nbsp;|🔴|[*_=\s]/gi, "") === "";
 }
 
 // Une ligne est barrée quand sa première case remplie l'est (le nom du médicament, l'antécédent)
@@ -1489,13 +1697,33 @@ function findTables(lines) {
   return tables;
 }
 
-// Lignes barrées en haut, les autres en dessous, chacune dans son ordre d'origine
-function sortDataRows(rows) {
+// Tableaux de traitement : médicaments rangés par l'émoji de classe placé devant leur nom,
+// dans le même ordre que les parties des antécédents ; autre émoji ensuite, puis sans émoji
+const ORDRE_CLASSES = ["🦀", "🫀", "🧠", "💩", "🦴", "🫁", "🫙", "🎭", "🍬", "🍰", "🩸", "☣"]; // ☣️ antibiotiques (comparé sans le sélecteur de variante)
+const EMOJI_DEBUT = /^[\s*_~=]*(\p{Extended_Pictographic})/u;
+function rangClasse(cells) {
+  const first = (cells.find((c) => c !== "") || "").replace(/<span class="pastille"><\/span>\s*/g, "");
+  const m = first.replace(STRIKE, (x) => x.replace(/~~|<\/?(s|del|strike)>/gi, "")).match(EMOJI_DEBUT);
+  if (!m) return 1000;
+  const k = ORDRE_CLASSES.indexOf(m[1]);
+  return k < 0 ? 500 : k;
+}
+const isTraitementTable = (lines, t) => /Traitement/i.test(t.header);
+
+// Lignes barrées en haut, les autres en dessous, chacune dans son ordre d'origine.
+// Avec rank (tableaux de traitement) : d'abord par émoji de classe, puis dans chaque classe les barrées en haut,
+// à égalité dans l'ordre d'origine
+function sortDataRows(rows, rank = null) {
   const out = [];
   let groups = [];
   const flush = () => {
-    for (const g of groups.filter((g) => g.struck)) out.push(...g.lines);
-    for (const g of groups.filter((g) => !g.struck)) out.push(...g.lines);
+    if (rank) {
+      const sorted = groups.map((g, k) => [g, k]).sort((a, b) => a[0].rank - b[0].rank || b[0].struck - a[0].struck || a[1] - b[1]);
+      for (const [g] of sorted) out.push(...g.lines);
+    } else {
+      for (const g of groups.filter((g) => g.struck)) out.push(...g.lines);
+      for (const g of groups.filter((g) => !g.struck)) out.push(...g.lines);
+    }
     groups = [];
   };
   for (const line of rows) {
@@ -1507,7 +1735,7 @@ function sortDataRows(rows) {
       if (groups.length) groups[groups.length - 1].lines.push(line);
       else out.push(line); // collée à l'en-tête ou à une ligne titre : reste en place
     } else {
-      groups.push({ lines: [line], struck: isStruckRow(cells) });
+      groups.push({ lines: [line], struck: isStruckRow(cells), rank: rank ? rank(cells) : 0 });
     }
   }
   flush();
@@ -1516,9 +1744,11 @@ function sortDataRows(rows) {
 
 const dataRows = (lines, t) => lines.slice(t.start + 2, t.end);
 
+const rankFor = (lines, t) => (isTraitementTable(lines, t) ? rangClasse : null);
+
 function needsSort(lines, t) {
   const rows = dataRows(lines, t);
-  return sortDataRows(rows).some((l, k) => l !== rows[k]);
+  return sortDataRows(rows, rankFor(lines, t)).some((l, k) => l !== rows[k]);
 }
 
 // Trie les tableaux retenus par `pick` (tous par défaut) ; renvoie le texte et le nombre de tableaux modifiés
@@ -1528,7 +1758,7 @@ function sortTables(text, pick = () => true) {
   findTables(lines).forEach((t, index) => {
     if (!pick(t, index)) return;
     const rows = dataRows(lines, t);
-    const sorted = sortDataRows(rows);
+    const sorted = sortDataRows(rows, rankFor(lines, t));
     if (sorted.every((l, k) => l === rows[k])) return;
     lines.splice(t.start + 2, rows.length, ...sorted);
     changed++;
@@ -1956,7 +2186,7 @@ module.exports = class StruckRowsFirstPlugin extends Plugin {
   }
 };
 
-module.exports._internals = { findTables, sortTables, sortDataRows, needsSort, isStruckCell, splitCells, mergeRect, splitRaw };
+module.exports._internals = { rangClasse, findTables, sortTables, sortDataRows, needsSort, isStruckCell, splitCells, mergeRect, splitRaw };
 
   return module.exports;
 })();
@@ -1964,7 +2194,7 @@ module.exports._internals = { findTables, sortTables, sortDataRows, needsSort, i
 // ===== Tableau des examens : boutons de catégorie, dates et colonne Examen fixes (src/filtres.js) =====
 const module_filtres = (function () {
   const module = { exports: {} };
-const { Notice, Plugin, TFile, setIcon } = require("obsidian");
+const { MarkdownView, Menu, Notice, Plugin, TFile, setIcon } = require("obsidian");
 
 // Tableau des examens : boutons de catégorie au-dessus (🧂, 🧪, 🩸…), un clic n'affiche que cette catégorie (la première par défaut).
 // Les dates (ligne d'en-tête) et la colonne Examen restent visibles pendant le défilement (voir filtres.css).
@@ -1986,6 +2216,15 @@ function categorize(table) {
   const rows = [...table.querySelectorAll("tbody tr")];
   let current = "";
   return rows.map((tr) => {
+    // Ligne avec son propre bouton émoji : elle prend la catégorie du bouton. Bouton vide sur une ligne entièrement vide :
+    // nouveau bloc sans catégorie (ces lignes étaient rangées à tort dans la dernière catégorie, ☣️ par exemple) ;
+    // bouton vide sur une ligne remplie (« Hémocultures ») : elle garde la catégorie du dessus
+    const own = tr.querySelector("button.exam-emoji-inline-picker");
+    if (own) {
+      const emo = ((own.textContent || "").match(EMOJI) || [, ""])[1].replace(/️/g, "");
+      const vide = [...tr.children].every((c) => c.contains(own) || !textOf(c));
+      if (emo || vide) current = emo;
+    }
     for (const cell of tr.children) {
       const m = textOf(cell).match(EMOJI);
       if (m) {
@@ -2041,6 +2280,22 @@ const plain = (s, br = " ") =>
     .trim();
 const label = (s) => plain(s).replace(NO_EMOJI, "").trim();
 const dateOf = (s) => label(s).replace(/[*_]/g, "").replace(/\s+/g, " ").trim();
+// Texte d'une case sans le jour de la semaine ajouté à l'affichage
+const texteCase = (cell) => {
+  const j = cell.querySelector(":scope > .jour-semaine");
+  return j ? (cell.textContent || "").replace(j.textContent, "") : cell.textContent || "";
+};
+// Jour de la semaine d'une date « jj/mm » (année déduite : une date à plus de 2 mois dans le futur est de l'année d'avant)
+const JOURS = ["Dimanche", "Lundi", "Mardi", "Mercredi", "Jeudi", "Vendredi", "Samedi"];
+function jourSemaine(txt, aujourdhui = new Date()) {
+  const m = (txt || "").match(/(\d{1,2})\/(\d{1,2})(?:\/(\d{2,4}))?/);
+  if (!m) return "";
+  const j = +m[1], mo = +m[2] - 1;
+  let an = m[3] ? (m[3].length === 2 ? 2000 + +m[3] : +m[3]) : aujourdhui.getFullYear();
+  let d = new Date(an, mo, j);
+  if (!m[3] && d - aujourdhui > 60 * 864e5) d = new Date(--an, mo, j);
+  return d.getDate() === j && d.getMonth() === mo ? JOURS[d.getDay()] : "";
+}
 const isCat = (name) => /^(CAT|conduite à tenir)\b/i.test(name.replace(/[()]/g, " ").trim());
 const lowerFirst = (s) => (/^\p{Lu}\p{Ll}/u.test(s) ? s[0].toLowerCase() + s.slice(1) : s);
 const upperFirst = (s) => (s ? s[0].toUpperCase() + s.slice(1) : s);
@@ -2111,13 +2366,20 @@ function bioText(ls, colIdx) {
   const head = mdCells(ls[h]);
   const ex = head.findIndex((c) => plain(c) === "Examen");
   const groups = new Map();
+  const emojiOf = (s) => ((s || "").match(/(\p{Extended_Pictographic})/u) || [, ""])[1];
+  let cat = "";
   for (let i = h + 1; i < ls.length && /^\s*\|/.test(ls[i]); i++) {
     if (isMdSep(ls[i])) continue;
     const c = mdCells(ls[i]);
     const raw = plain(c[ex] || "");
+    // Catégorie de la ligne : émoji du bouton de la 1re colonne, « ^ » = même catégorie que la ligne du dessus,
+    // à défaut l'émoji écrit devant le nom de l'examen (« CRP » sans émoji reste avec 🧪 si sa ligne a le bouton 🧪)
+    const before = c.slice(0, ex).join(" ");
+    if (!before.trim().startsWith("^")) cat = emojiOf(plain(before)) || emojiOf(raw) || (raw ? cat : "");
+    else if (!cat) cat = emojiOf(raw);
     const v = plain(c[colIdx] || "");
     if (!raw || !v || v === "^" || v === "<") continue;
-    const emo = (raw.match(/^\s*(\p{Extended_Pictographic})/u) || [, ""])[1];
+    const emo = cat || emojiOf(raw);
     let name = raw.replace(NO_EMOJI, "").trim();
     let unit = "";
     const m = name.match(/^(.*?)\s*\(([^)]*)\)\s*$/);
@@ -2147,9 +2409,73 @@ function traitement(ls, actuel) {
     const c = actuel
       ? raw.map((x) => plain(x.replace(/<br\s*\/?>/gi, ", ")).replace(/(,\s*)+(?=,)/g, "").replace(/^,\s*|,\s*$/g, ""))
       : raw.map((x) => plain(x.replace(/~~/g, ""), " "));
+    c[0] = (c[0] || "").replace(NO_EMOJI, "").replace(/‍/g, "").trim(); // émoji de classe devant le médicament : pas copié
     if (c[0]) out.push(c[1] ? `${c[0]} : ${c[1]}` : c[0]);
   }
   return out.join("\n");
+}
+
+// ---------- Parties du tableau des antécédents ----------
+// Bouton + dans la 1re case du tableau : menu des parties absentes, insérée à sa place dans cet ordre
+// (oncologiques, cardiaques, neurologiques, digestifs, rhumatologiques, les autres spécialités, Autres, chirurgicaux en dernier).
+const PARTIES = [
+  ["🦀", "Oncologiques"], ["🫀", "Cardiaques"], ["🧠", "Neurologiques"], ["💩", "Digestifs"], ["🦴", "Rhumatologiques"],
+  ["🫁", "Pneumologiques"], ["🫙", "Néphro-uro"], ["🎭", "Psychiatriques"],
+  ["🍬", "Endocrinologiques"], ["🍰", "Dermatologiques"], ["🩸", "Hématologiques"], ["☣️", "Infectieux"], ["", "Autres"], ["🔪", "Chirurgicaux"],
+];
+const partieTitre = ([e, n]) => (e ? e + " " + n : n);
+// Rang d'une ligne titre dans PARTIES, d'après son texte (« 🫀 Cardiaques » ou ancien « Antécédents cardiaques ») ; -1 si inconnue
+function partieRang(line) {
+  const t = label(line).toLowerCase().replace(/antécédents/g, "").replace(/[|<*]/g, " ").trim();
+  if (/^médicaux/.test(t)) return PARTIES.findIndex(([, n]) => n === "Autres"); // ancien titre « Antécédents médicaux »
+  return PARTIES.findIndex(([, n]) => t === n.toLowerCase() || t.split(/\s+/)[0] === n.toLowerCase());
+}
+const isTitleLine = (l) => {
+  if (!/^\s*\|/.test(l) || isMdSep(l)) return false;
+  const c = mdCells(l);
+  return c.length > 1 && c.slice(1).every((x) => x === "<");
+};
+const isPartieTitre = (s) => /^Antécédents\b/i.test(s) || PARTIES.some(([, n]) => s.toLowerCase() === n.toLowerCase());
+
+// Texte de la note avec la partie ajoutée, ou null
+function ajouterPartie(text, rang) {
+  const nl = text.includes("\r\n") ? "\r\n" : "\n";
+  const ls = text.split(/\r?\n/);
+  const h = ls.findIndex((l) => /^#{1,6}\s/.test(l.trim()) && /Antécédents/i.test(l));
+  if (h < 0) return null;
+  let a = h + 1;
+  while (a < ls.length && !/^\s*\|/.test(ls[a])) {
+    if (/^#{1,6}\s/.test(ls[a].trim())) return null;
+    a++;
+  }
+  let b = a;
+  while (b < ls.length && /^\s*\|/.test(ls[b])) b++;
+  if (b === a) return null;
+  const titres = [];
+  for (let i = a; i < b; i++) if (isTitleLine(ls[i])) titres.push({ i, r: partieRang(ls[i]) });
+  if (titres.some((t) => t.r === rang)) return null;
+  const cols = mdCells(ls[a]).length;
+  const titre = "| **" + partieTitre(PARTIES[rang]) + "** |" + " < |".repeat(cols - 1);
+  const vide = "|" + "  |".repeat(cols);
+  const suivant = titres.find((t) => t.r > rang);
+  if (!suivant) ls.splice(b, 0, titre, vide);
+  else if (suivant.i === a) ls.splice(a, 2, titre, ls[a + 1], vide, ls[a]); // nouvelle 1re partie : elle prend l'en-tête
+  else ls.splice(suivant.i, 0, titre, vide);
+  return ls.join(nl);
+}
+
+// Nouvelle colonne de date à droite du tableau des examens (en-tête « jj/mm » du jour), ou null
+function ajouterColonne(text, date) {
+  const nl = text.includes("\r\n") ? "\r\n" : "\n";
+  const ls = text.split(/\r?\n/);
+  const h = ls.findIndex((l) => /^\s*\|/.test(l) && mdCells(l).some((c) => plain(c) === "Examen"));
+  if (h < 0) return null;
+  if (mdCells(ls[h]).some((c) => plain(c) === date)) return "!La colonne du " + date + " existe déjà";
+  for (let i = h; i < ls.length && /^\s*\|/.test(ls[i]); i++) {
+    const cell = i === h ? " " + date + " " : isMdSep(ls[i]) ? " --- " : "  ";
+    ls[i] = /\|\s*$/.test(ls[i]) ? ls[i].replace(/\s*$/, "") + cell + "|" : ls[i] + " |" + cell + "|";
+  }
+  return ls.join(nl);
 }
 
 function copyButton(cell, build, app, path) {
@@ -2172,7 +2498,8 @@ function copyButton(cell, build, app, path) {
       if (!(file instanceof TFile)) return;
       src = await app.vault.read(file);
     }
-    const text = build(src.split(/\r?\n/));
+    // Pastilles d'importance (« - [!] », « 🔴 ») retirées : elles ne vont pas dans le texte copié
+    const text = build(src.split(/\r?\n/).map((l) => l.replace(/^(\s*(?:>\s*)*[-*+]\s+)\[!\]\s+/, "$1").replace(/\s*🔴/g, "").replace(/<span class="pastille"><\/span>\s*/g, "")));
     if (!text) return void new Notice("Rien à copier");
     // Presse-papiers refusé (fenêtre sans le focus) : l'ancien contenu restait, sans message
     try {
@@ -2194,6 +2521,16 @@ function copyButton(cell, build, app, path) {
 module.exports = class ExamFiltresPlugin extends Plugin {
   onload() {
     this.choix = new Map(); // chemin de la note -> catégorie choisie ("" = tout)
+    // Tableau des jours : position de défilement par note, gardée pendant que la note est ouverte
+    // (le tableau redessiné au clic dans une case ne repart pas en bas) ; oubliée à la réouverture : retour en bas
+    this.posJours = new Map();
+    // Positions oubliées à l'ouverture d'une autre note : en y revenant, le tableau des jours repart en bas
+    this.noteOuverte = null;
+    this.registerEvent(this.app.workspace.on("file-open", (file) => {
+      if (!file || file.path === this.noteOuverte) return;
+      this.noteOuverte = file.path;
+      for (const k of [...this.posJours.keys()]) if (k.endsWith("|" + file.path)) this.posJours.delete(k);
+    }));
 
     // Passage lecture <-> modification : le tableau devient visible sans que le DOM change
     this.mesures = new WeakMap();
@@ -2222,6 +2559,29 @@ module.exports = class ExamFiltresPlugin extends Plugin {
     this.register(() => observer.disconnect());
     this.app.workspace.onLayoutReady(() => this.scanWorkspace());
 
+    // En-tête figé aussi quand c'est la note qui défile : l'en-tête n'est collant que dans le cadre du tableau,
+    // il sortait de l'écran avec le haut du tableau. On le décale de la hauteur du tableau passée au-dessus de l'écran.
+    let calcul = false;
+    const suivreNote = () => {
+      if (calcul) return;
+      calcul = true;
+      requestAnimationFrame(() => {
+        calcul = false;
+        for (const table of this.app.workspace.containerEl.querySelectorAll("table.tableau-jours, table.exam-filtrable, table.tableau-long")) {
+          const cadre = table.closest(".cm-scroller, .markdown-preview-view");
+          if (!cadre || !table.offsetParent) continue;
+          const t = table.getBoundingClientRect();
+          const haut = cadre.getBoundingClientRect().top;
+          const entete = table.querySelector("thead") || table.querySelector("tr");
+          const max = Math.max(0, table.clientHeight - (entete ? entete.offsetHeight : 0));
+          const dec = Math.round(Math.min(Math.max(0, haut - t.top), max)) + "px";
+          if (table.style.getPropertyValue("--entete-decalage") !== dec) table.style.setProperty("--entete-decalage", dec);
+        }
+      });
+    };
+    this.registerDomEvent(document, "scroll", suivreNote, { capture: true, passive: true });
+    this.registerDomEvent(window, "resize", suivreNote);
+
     const rescan = () => requestAnimationFrame(() => this.scanWorkspace());
     this.registerEvent(this.app.workspace.on("layout-change", rescan));
     this.registerEvent(this.app.workspace.on("active-leaf-change", rescan));
@@ -2249,6 +2609,7 @@ module.exports = class ExamFiltresPlugin extends Plugin {
   scan(root, path) {
     for (const table of root.querySelectorAll("table")) {
       if (path) this.addCopyButtons(table, path);
+      this.marquerTableauLong(table);
       if (table.dataset[DONE]) {
         if (!table.previousElementSibling || !table.previousElementSibling.classList.contains("exam-filtre-barre")) {
           delete table.dataset[DONE]; // barre effacée par un nouveau rendu : on la remet
@@ -2262,35 +2623,265 @@ module.exports = class ExamFiltresPlugin extends Plugin {
     }
   }
 
+  // Autre tableau plus haut que les trois quarts de la note (note des normes, par exemple) : en-tête figé
+  // pendant le défilement de la note, comme le tableau des jours (voir --entete-decalage)
+  marquerTableauLong(table) {
+    if (table.classList.contains("tableau-jours") || table.classList.contains("exam-filtrable")) return;
+    const cadre = table.closest(".cm-scroller, .markdown-preview-view");
+    if (!cadre || !table.offsetParent || !table.querySelector("thead")) return;
+    const long = table.offsetHeight > cadre.clientHeight * 0.75;
+    if (long !== table.classList.contains("tableau-long")) table.classList.toggle("tableau-long", long);
+  }
+
   addCopyButtons(table, path) {
     const head = table.querySelector("thead tr") || table.querySelector("tr");
     if (!head) return;
     const headCells = [...head.children];
     if (headCells.length && dateOf(headCells[0].textContent) === "Date") {
       table.classList.add("tableau-jours");
+      this.positionJours(table, path);
       // Un bouton par ligne, même encore vide : la date est relue au clic (lignes et colonnes ajoutées au fur et à mesure)
       for (const tr of table.querySelectorAll("tbody tr")) {
         const cell = tr.children[0];
-        if (cell) copyButton(cell, (ls) => dayText(ls, dateOf(cell.textContent)), this.app, path);
+        if (!cell) continue;
+        copyButton(cell, (ls) => dayText(ls, dateOf(texteCase(cell))), this.app, path);
+        // Jour de la semaine sous la date (affichage seulement, rien n'est écrit dans la note)
+        const jour = jourSemaine(dateOf(texteCase(cell)));
+        const ancien = cell.querySelector(":scope > .jour-semaine");
+        if (ancien && ancien.textContent !== jour) ancien.remove();
+        if (jour && !cell.querySelector(":scope > .jour-semaine")) cell.createDiv({ cls: "jour-semaine", text: jour });
       }
       return;
     }
     const titre = headCells.length ? label(headCells[0].textContent) : "";
-    if (/^Traitement (habituel|actuel)$/i.test(titre)) {
-      const actuel = /actuel/i.test(titre);
+    if (isPartieTitre(titre)) return void this.addPartieButton(headCells[0], path);
+    if (/^Traitement( habituel| actuel)?$/i.test(titre)) {
+      const actuel = !/habituel/i.test(titre); // « Traitement » seul (tableau unique) : médicaments en cours, non barrés
       copyButton(headCells[0], (ls) => traitement(ls, actuel), this.app, path);
       return;
     }
     const ex = headCells.findIndex((c) => textOf(c) === "Examen");
     if (ex < 0) return;
+    this.addColonneButton(headCells[headCells.length - 1], path);
     headCells.forEach((cell, i) => {
       // Rang de la colonne relu au clic : une date insérée plus tard ne décale pas les boutons
       if (i > ex && textOf(cell)) copyButton(cell, (ls) => bioText(ls, [...cell.parentElement.children].indexOf(cell)), this.app, path);
     });
   }
 
+  // + dans la dernière case de l'en-tête des examens : colonne du jour ajoutée à droite (mode modification seulement, voir filtres.css)
+  // Tableau des jours affiché en bas (derniers jours) à l'ouverture de la note ; ensuite il garde la position choisie,
+  // même redessiné (clic dans une case, passage lecture/modification), jusqu'à la réouverture de la note
+  positionJours(table, path) {
+    this.garderPosition(table, "jours|" + path, true);
+  }
+
+  // Défilement interne d'un tableau (jours, examens) gardé par note :
+  // - nouveau tableau (autre mode, tableau recréé) : remis à la position gardée, sinon en bas (bas = true) ou en haut ;
+  // - même tableau redessiné (case modifiée en mode modification) : sa hauteur retombe un instant et le défilement
+  //   repartait à 0, enregistré comme nouvelle position ; on remet la position d'avant le redessin.
+  garderPosition(table, key, bas) {
+    if (table.dataset.posGardee) return;
+    table.dataset.posGardee = "1";
+    let redessin = false;
+    // Clic dans une case (mode modification) : la colonne éditée s'élargit, les lignes au-dessus raccourcissent et tout
+    // remontait ; l'éditeur peut aussi faire défiler vers le haut de la case. On garde la ligne cliquée au même endroit
+    // de l'écran : sa position est notée au clic, puis rétablie dans les instants qui suivent.
+    // (Obsidian peut remplacer le tableau au clic : le recalage vise le tableau de cette note affiché à ce moment.)
+    table.dataset.cle = key;
+    if (!this.ancres) this.ancres = new Map();
+    const ancreActive = () => {
+      const a = this.ancres.get(key);
+      return a && performance.now() < a.fin ? a : null;
+    };
+    table.addEventListener("pointerdown", (e) => {
+      const tr = e.target instanceof Element && e.target.closest("tr");
+      // Barre de défilement (cible = le tableau lui-même) ou en-tête : rien à faire
+      if (!tr || !table.contains(tr) || tr.closest("thead")) return;
+      this.ancres.set(key, { idx: tr.rowIndex, top: tr.getBoundingClientRect().top - table.getBoundingClientRect().top, fin: performance.now() + 3000 });
+      const recaler = () => {
+        const a = ancreActive();
+        if (!a) return;
+        for (const t of this.app.workspace.containerEl.querySelectorAll("table")) {
+          if (t.dataset.cle !== key || !t.isConnected || !t.offsetParent) continue;
+          const r = t.rows[a.idx];
+          if (!r) continue;
+          // Position par rapport au tableau : un défilement de la note ne compte pas
+          const d = r.getBoundingClientRect().top - t.getBoundingClientRect().top - a.top;
+          if (Math.abs(d) <= 2) continue;
+          // Tableau déjà en bas de son défilement : il ne pourrait pas descendre plus ; une marge temporaire en bas
+          // (retirée à la molette) donne la place nécessaire
+          const manque = t.scrollTop + d - (t.scrollHeight - t.clientHeight);
+          if (manque > 0) t.style.paddingBottom = (parseFloat(t.style.paddingBottom) || 0) + Math.ceil(manque) + "px";
+          t.scrollTop += d;
+        }
+      };
+      requestAnimationFrame(() => {
+        recaler();
+        requestAnimationFrame(recaler);
+      });
+      // Le réarrangement des colonnes dure jusqu'à 2 s après le clic : on suit chaque changement de taille des lignes
+      if (this.suiviLignes) this.suiviLignes.disconnect();
+      this.suiviLignes = new ResizeObserver(() => recaler());
+      for (const r of table.rows) this.suiviLignes.observe(r);
+      const suivi = this.suiviLignes;
+      setTimeout(() => suivi.disconnect(), 3000);
+    }, { capture: true });
+    table.addEventListener("wheel", () => {
+      this.ancres.delete(key);
+      if (table.style.paddingBottom) table.style.paddingBottom = "";
+    }, { passive: true, capture: true });
+    // Position gardée = distance au bas du tableau (tableau des jours, calé en bas) ou au haut (examens) :
+    // en lecture et en modification les lignes n'ont pas la même hauteur, la distance au bas reste juste
+    const lire = () => (bas ? table.scrollHeight - table.clientHeight - table.scrollTop : table.scrollTop);
+    const appliquer = (v) => (table.scrollTop = bas ? table.scrollHeight - table.clientHeight - v : v);
+    const visible = () => table.isConnected && !!table.offsetParent && table.clientHeight > 0;
+    table.addEventListener("scroll", () => {
+      // Tableau qu'on cache (passage lecture <-> modification) : il retombe à 0 sans que l'utilisateur ait défilé ;
+      // ce 0 ne doit pas devenir la position du tableau de l'autre mode
+      if (!visible()) return;
+      if (!redessin) this.posJours.set(key, lire());
+    }, { passive: true });
+    const placer = () => {
+      if (!visible()) return false;
+      const pos = this.posJours.get(key);
+      appliquer(pos === undefined ? 0 : pos);
+      this.posJours.set(key, lire());
+      return true;
+    };
+    const mo = new MutationObserver(() => {
+      if (!table.isConnected) return void mo.disconnect();
+      const pos = this.posJours.get(key);
+      if (pos === undefined || !visible()) return;
+      redessin = true;
+      // Ligne cliquée à garder en place (ancre) : c'est elle qui décide de la position, pas le défilement d'avant
+      if (!ancreActive() && Math.abs(lire() - pos) > 1) appliquer(pos);
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          redessin = false;
+          if (visible()) this.posJours.set(key, lire());
+        });
+      });
+    });
+    mo.observe(table, { childList: true, subtree: true, characterData: true });
+    this.register(() => mo.disconnect());
+    placer();
+    // Tableau caché (autre mode, onglet en arrière-plan) : replacé à chaque réapparition, sur la position commune
+    // aux deux modes (passage lecture -> modification : même endroit du tableau)
+    if (!this.visiPos) {
+      this.placeurs = new WeakMap();
+      this.visiPos = new IntersectionObserver((entries) => {
+        for (const e of entries) if (e.isIntersecting && this.placeurs.has(e.target)) this.placeurs.get(e.target)();
+      });
+      this.register(() => this.visiPos.disconnect());
+    }
+    this.placeurs.set(table, placer);
+    this.visiPos.observe(table);
+  }
+
+  addColonneButton(cell, path) {
+    if (cell.querySelector(":scope > .exam-ajout-colonne")) return;
+    const btn = createEl("button", { cls: "exam-ajout-colonne", text: "+", attr: { type: "button", "aria-label": "Ajouter une colonne (date du jour)" } });
+    btn.addEventListener("mousedown", (e) => e.preventDefault());
+    btn.addEventListener("click", async (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const d = new Date();
+      const date = String(d.getDate()).padStart(2, "0") + "/" + String(d.getMonth() + 1).padStart(2, "0");
+      const view = this.app.workspace.getLeavesOfType("markdown").map((l) => l.view)
+        .find((v) => v instanceof MarkdownView && v.file && v.file.path === path && v.containerEl.contains(btn));
+      await this.ecrire(view, path, (t) => ajouterColonne(t, date));
+    });
+    cell.append(btn);
+  }
+
+  // Écrit fn(texte) dans la note : par l'éditeur en mode modification (Ctrl+Z, sans saut d'écran), sinon par le fichier.
+  // fn renvoie le nouveau texte, null (rien à faire) ou « !message »
+  async ecrire(view, path, fn) {
+    const dire = (r) => new Notice(r === null ? "Tableau introuvable" : r.slice(1));
+    if (view && view.getMode() === "source" && view.editor) {
+      const old = view.editor.getValue();
+      const neu = fn(old);
+      if (neu === null || neu.startsWith("!")) return void dire(neu);
+      const cm = view.editor.cm;
+      if (cm && cm.dispatch) {
+        let a = 0;
+        while (a < old.length && old[a] === neu[a]) a++;
+        let b = 0;
+        while (b < old.length - a && b < neu.length - a && old[old.length - 1 - b] === neu[neu.length - 1 - b]) b++;
+        const top = cm.scrollDOM.scrollTop;
+        cm.dispatch({ changes: { from: a, to: old.length - b, insert: neu.slice(a, neu.length - b) }, scrollIntoView: false });
+        requestAnimationFrame(() => (cm.scrollDOM.scrollTop = top));
+      } else view.editor.setValue(neu);
+      return;
+    }
+    const file = this.app.vault.getAbstractFileByPath(path);
+    if (!(file instanceof TFile)) return;
+    let r0 = "";
+    await this.app.vault.process(file, (t) => {
+      const r = fn(t);
+      r0 = r;
+      return r === null || r.startsWith("!") ? t : r;
+    });
+    if (r0 === null || r0.startsWith("!")) dire(r0);
+  }
+
+  addPartieButton(cell, path) {
+    if (cell.querySelector(":scope > .tableau-partie")) return;
+    const btn = createEl("button", { cls: "tableau-copier tableau-partie clickable-icon", attr: { "aria-label": "Ajouter une partie", type: "button" } });
+    setIcon(btn, "plus");
+    btn.addEventListener("mousedown", (e) => e.preventDefault());
+    btn.addEventListener("click", async (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const view = this.app.workspace.getLeavesOfType("markdown").map((l) => l.view)
+        .find((v) => v instanceof MarkdownView && v.file && v.file.path === path && v.containerEl.contains(btn));
+      const file = this.app.vault.getAbstractFileByPath(path);
+      const src = view && view.editor ? view.editor.getValue() : file instanceof TFile ? await this.app.vault.read(file) : "";
+      const presents = new Set(src.split(/\r?\n/).filter(isTitleLine).map(partieRang));
+      const menu = new Menu();
+      PARTIES.forEach((p, rang) => {
+        if (presents.has(rang)) return;
+        menu.addItem((it) => it.setTitle(partieTitre(p)).onClick(() => this.insererPartie(view, path, rang)));
+      });
+      menu.showAtMouseEvent(e);
+    });
+    cell.prepend(btn);
+  }
+
+  // Mode modification : par l'éditeur (annulable avec Ctrl+Z, sans saut d'écran) ; mode lecture : par le fichier
+  async insererPartie(view, path, rang) {
+    if (view && view.getMode() === "source" && view.editor) {
+      const old = view.editor.getValue();
+      const neu = ajouterPartie(old, rang);
+      if (neu === null) return void new Notice("Partie déjà présente ou tableau introuvable");
+      const cm = view.editor.cm;
+      if (cm && cm.dispatch) {
+        // Seul le passage modifié est remplacé
+        let a = 0;
+        while (a < old.length && old[a] === neu[a]) a++;
+        let b = 0;
+        while (b < old.length - a && old[old.length - 1 - b] === neu[neu.length - 1 - b]) b++;
+        const top = cm.scrollDOM.scrollTop;
+        cm.dispatch({ changes: { from: a, to: old.length - b, insert: neu.slice(a, neu.length - b) }, scrollIntoView: false });
+        requestAnimationFrame(() => (cm.scrollDOM.scrollTop = top));
+      } else view.editor.setValue(neu);
+      return;
+    }
+    const file = this.app.vault.getAbstractFileByPath(path);
+    if (!(file instanceof TFile)) return;
+    let ok = false;
+    await this.app.vault.process(file, (t) => {
+      const r = ajouterPartie(t, rang);
+      ok = r !== null;
+      return ok ? r : t;
+    });
+    if (!ok) new Notice("Partie déjà présente ou tableau introuvable");
+  }
+
   enhance(table, path) {
     table.dataset[DONE] = "1";
+    this.garderPosition(table, "examens|" + path, false);
     table.classList.add("exam-filtrable");
 
     const bar = createDiv({ cls: "exam-filtre-barre" });
@@ -2330,7 +2921,7 @@ module.exports = class ExamFiltresPlugin extends Plugin {
   }
 };
 
-module.exports._test = { dayText, bioText, traitement, withUnit, unitOf, dateOf };
+module.exports._test = { jourSemaine, ajouterColonne, ajouterPartie, partieRang, dayText, bioText, traitement, withUnit, unitOf, dateOf };
 
   return module.exports;
 })();
@@ -2353,6 +2944,64 @@ module.exports = class ReplierPlugin extends Plugin {
     this.app.workspace.onLayoutReady(addAll);
     this.registerEvent(this.app.workspace.on("layout-change", addAll));
     this.registerEvent(this.app.workspace.on("active-leaf-change", addAll));
+    this.garderPositionEntreModes();
+  }
+
+  // Passage lecture <-> modification : Obsidian perd la position sur les notes à gros tableaux
+  // (de la ligne 27 en lecture à la ligne 3 en modification, constaté même sans ce plugin).
+  // On retient la ligne affichée dans chaque mode, et après un changement de mode on y ramène la note.
+  garderPositionEntreModes() {
+    const etat = new WeakMap(); // vue -> { mode, ligne, retour }
+    const vueDe = (el) =>
+      this.app.workspace.getLeavesOfType("markdown").map((l) => l.view)
+        .find((v) => v instanceof MarkdownView && v.containerEl.contains(el));
+    const ramener = (v, s) => {
+      s.retour = performance.now() + 900; // pendant ce temps, les défilements d'Obsidian ne remplacent pas la ligne retenue
+      const mode = s.mode;
+      const ligne = s.ligne;
+      const appliquer = () => {
+        if (performance.now() > s.retour || v.getMode() !== mode) return; // l'utilisateur a repris la main
+        if (v.currentMode && v.currentMode.applyScroll) v.currentMode.applyScroll(ligne);
+      };
+      for (const t of [0, 60, 200, 450, 800]) setTimeout(appliquer, t);
+    };
+    // Molette, clavier ou clic de l'utilisateur : on arrête aussitôt de ramener la note
+    const reprise = () => {
+      for (const l of this.app.workspace.getLeavesOfType("markdown")) {
+        const s = etat.get(l.view);
+        if (s) s.retour = 0;
+      }
+    };
+    for (const type of ["wheel", "keydown", "pointerdown"]) this.registerDomEvent(document, type, reprise, { capture: true, passive: true });
+    const verifier = (v) => {
+      if (!(v instanceof MarkdownView) || !v.currentMode || !v.currentMode.getScroll) return;
+      const mode = v.getMode();
+      const fichier = v.file ? v.file.path : "";
+      const s = etat.get(v);
+      // Première fois, ou autre note ouverte dans le même onglet : on repart de la position actuelle
+      if (!s || s.fichier !== fichier) return void etat.set(v, { mode, fichier, ligne: v.currentMode.getScroll(), retour: 0 });
+      if (s.mode !== mode) {
+        // Changement de mode : on garde la ligne d'avant et on y ramène la note
+        s.mode = mode;
+        ramener(v, s);
+        return;
+      }
+      if (performance.now() > s.retour) s.ligne = v.currentMode.getScroll();
+    };
+    let attente = false;
+    this.registerDomEvent(document, "scroll", (e) => {
+      if (attente || !(e.target instanceof Element)) return;
+      attente = true;
+      requestAnimationFrame(() => {
+        attente = false;
+        const v = vueDe(e.target);
+        if (v) verifier(v);
+      });
+    }, { capture: true, passive: true });
+    // Changement de mode sans défilement : repéré au changement de disposition
+    this.registerEvent(this.app.workspace.on("layout-change", () => {
+      for (const l of this.app.workspace.getLeavesOfType("markdown")) verifier(l.view);
+    }));
   }
 
   onunload() {
@@ -2410,13 +3059,612 @@ module.exports._test = { headingFolds };
   return module.exports;
 })();
 
-const { Plugin } = require("obsidian");
+// ===== Pastilles rouges sur les lignes importantes (src/pastilles.js) =====
+const module_pastilles = (function () {
+  const module = { exports: {} };
+const { MarkdownView, Notice, Plugin, TFile } = require("obsidian");
 
-// Un seul plugin : chaque module est chargé comme un enfant, et déchargé avec lui
+// Pastilles rouges pour mettre une ligne en valeur, sans rien taper :
+// - une pastille grise, invisible tant qu'on ne survole pas la ligne, est posée d'avance à gauche de chaque puce et
+//   de chaque ligne de tableau : le survol (marge de gauche comprise) l'affiche aussitôt, sans calcul ;
+// - un clic l'allume en rouge, un clic sur la pastille rouge l'éteint ;
+// - aussi par le clic droit (« Marquer important ») et par une commande (raccourci au choix dans les réglages).
+// Dans la note : « - [!] texte » pour une puce (case spéciale d'Obsidian, affichée en pastille rouge),
+// « <span class="pastille"></span> » au début de la première case pour une ligne de tableau (petite pastille rouge
+// à gauche, rien d'autre). Les boutons Copier et le tri l'ignorent.
+
+const MARQUE = '<span class="pastille"></span>';
+const MARQUE_RE = /<span class="pastille"><\/span>\s*/g;
+const PUCE = /^(\s*(?:>\s*)*[-*+]\s+)(\[(.)\]\s+)?/;
+
+// Nouvelle ligne avec la pastille ajoutée ou retirée, ou null si la ligne ne s'y prête pas
+function basculerLigne(line) {
+  const m = line.match(PUCE);
+  if (m) {
+    if (m[2] && m[3] === "!") return m[1] + line.slice(m[0].length); // pastille retirée
+    if (m[2]) return null; // vraie case à cocher : on n'y touche pas
+    return m[1] + "[!] " + line.slice(m[0].length);
+  }
+  const t = line.match(/^(\s*(?:>\s*)*\|)([^|]*)(\|.*)$/);
+  if (!t) return null;
+  const cell = t[2];
+  const contenu = cell.replace(MARQUE_RE, "").replace(/\s*🔴/g, "").trim();
+  // Séparateur, case fusionnée, ligne titre, ligne d'examen (bouton émoji), case vide : pas de pastille
+  if (/^:?-+:?$/.test(contenu) || contenu === "^" || contenu === "<" || /data-exam-emoji-picker/.test(cell)) return null;
+  if (/^\s*\|\s*<\s*\|/.test(t[3]) || !contenu) return null;
+  // Déjà marquée (balise, ou ancien 🔴) : on retire ; sinon on met la balise au début de la case
+  if (cell.includes(MARQUE) || cell.includes("🔴")) {
+    return t[1] + cell.replace(MARQUE_RE, "").replace(/\s*🔴/g, "") + t[3];
+  }
+  return t[1] + cell.replace(/^(\s*)/, "$1" + MARQUE) + t[3];
+}
+
+const estMarque = (line) => {
+  const m = line.match(PUCE);
+  if (m) return !!(m[2] && m[3] === "!");
+  const t = line.match(/^\s*(?:>\s*)*\|([^|]*)\|/);
+  return !!t && (t[1].includes(MARQUE) || t[1].includes("🔴"));
+};
+
+const nouvelleFantome = () => createSpan({ cls: "pastille-fantome", attr: { "aria-label": "Marquer important" } });
+
+module.exports = class PastillesPlugin extends Plugin {
+  onload() {
+    this.lignesLecture = new WeakMap(); // élément affiché (li, tr) en mode lecture -> { path, line }
+
+    // Mode lecture : chaque puce et chaque ligne de tableau reçoit son numéro de ligne dans la note
+    this.registerMarkdownPostProcessor((el, ctx) => {
+      try {
+        const info = ctx.getSectionInfo(el);
+        if (!info) return;
+        const lines = info.text.split(/\r?\n/);
+        const items = [];
+        for (let i = info.lineStart; i <= info.lineEnd; i++) if (PUCE.test(lines[i] || "")) items.push(i);
+        [...el.querySelectorAll("li")].forEach((li, k) => {
+          if (items[k] !== undefined) this.lignesLecture.set(li, { path: ctx.sourcePath, line: items[k] });
+        });
+        let t0 = -1;
+        for (let i = info.lineStart; i <= info.lineEnd; i++) if (/^\s*(?:>\s*)*\|/.test(lines[i] || "")) { t0 = i; break; }
+        const table = el.querySelector("table");
+        if (t0 >= 0 && table) [...table.rows].forEach((tr, k) => {
+          if (k > 0) this.lignesLecture.set(tr, { path: ctx.sourcePath, line: t0 + 1 + k });
+        });
+      } catch (e) {
+        console.error("Outils hospit, pastilles", e);
+      }
+    });
+
+    // Pastilles grises posées d'avance (puces du mode lecture, lignes de tableau des deux modes)
+    let attente = false;
+    const poser = () => {
+      attente = false;
+      for (const li of this.app.workspace.containerEl.querySelectorAll(".markdown-reading-view li")) {
+        if (li.closest("table") || (li.dataset.task && li.dataset.task !== "!")) continue;
+        if (li.dataset.task === "!") continue; // la case rouge sert déjà de pastille
+        if (!li.querySelector(":scope > .pastille-fantome")) li.prepend(nouvelleFantome());
+      }
+      for (const tr of this.app.workspace.containerEl.querySelectorAll(".workspace-leaf-content[data-type='markdown'] table tbody tr")) {
+        const c = tr.cells[0];
+        if (!c || !this.ligneTableauPossible(tr)) continue;
+        if (c.querySelector(".pastille")) {
+          const f = c.querySelector(":scope > .pastille-fantome");
+          if (f) f.remove();
+        } else if (!c.querySelector(":scope > .pastille-fantome")) c.prepend(nouvelleFantome());
+      }
+    };
+    const obs = new MutationObserver(() => {
+      if (attente) return;
+      attente = true;
+      requestAnimationFrame(poser);
+    });
+    obs.observe(this.app.workspace.containerEl, { childList: true, subtree: true });
+    this.register(() => obs.disconnect());
+    this.app.workspace.onLayoutReady(poser);
+    this.register(() => document.querySelectorAll(".pastille-fantome").forEach((f) => f.remove()));
+
+    // Mode modification, puces : l'éditeur gère lui-même ses lignes, on y affiche une pastille flottante
+    this.flottante = document.body.createDiv({ cls: "pastille-fantome pastille-flottante" });
+    this.register(() => this.flottante.remove());
+    let cible = null;
+    let cacher = null;
+    let suivi = null;
+    const placer = (ligne) => {
+      if (ligne === cible && this.flottante.style.display === "block") return;
+      cible = ligne;
+      const puce = ligne.querySelector(".list-bullet") || ligne;
+      const r = puce.getBoundingClientRect();
+      const h = ligne.getBoundingClientRect();
+      this.flottante.style.top = h.top + Math.min(h.height, 26) / 2 - 5 + "px";
+      this.flottante.style.left = r.left - 18 + "px";
+      this.flottante.style.display = "block";
+    };
+    this.registerDomEvent(document, "mousemove", (e) => {
+      suivi = e;
+      if (this.suiviPrevu) return;
+      this.suiviPrevu = true;
+      requestAnimationFrame(() => {
+        this.suiviPrevu = false;
+        const ev = suivi;
+        if (!ev || ev.target === this.flottante) return void clearTimeout(cacher);
+        const ligne = this.ligneEditeurSous(ev);
+        if (ligne) {
+          clearTimeout(cacher);
+          return void placer(ligne);
+        }
+        clearTimeout(cacher);
+        cacher = setTimeout(() => {
+          this.flottante.style.display = "none";
+          cible = null;
+        }, 300);
+      });
+    }, { passive: true });
+
+    // Clics : pastille grise (allume), pastille rouge (éteint), case rouge d'une puce « [!] » (éteint).
+    // Interceptés dès la fenêtre : sinon le tableau du mode modification passe en édition de la case.
+    const surClic = (e) => {
+      if (!(e.target instanceof Element)) return;
+      let el = null;
+      if (e.target === this.flottante) el = cible;
+      else if (e.target.closest(".pastille-fantome, .pastille")) el = e.target.closest("li, tr, .cm-line");
+      else {
+        const box = e.target.closest("input.task-list-item-checkbox");
+        if (box) el = box.closest('li[data-task="!"], .HyperMD-task-line[data-task="!"]');
+      }
+      if (!el) return;
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      if (e.type === "click") this.basculerElement(el);
+    };
+    for (const type of ["pointerdown", "mousedown", "click"]) this.registerDomEvent(window, type, surClic, { capture: true });
+
+    // Commande (raccourci au choix dans Réglages > Raccourcis) et clic droit, sur la ligne du curseur
+    this.addCommand({
+      id: "pastille",
+      name: "Marquer / démarquer la ligne comme importante",
+      editorCallback: (editor) => this.basculerEditeur(editor, editor.getCursor().line),
+    });
+    this.registerEvent(this.app.workspace.on("editor-menu", (menu, editor) => {
+      const n = editor.getCursor().line;
+      const l = editor.getLine(n);
+      if (basculerLigne(l) === null) return;
+      menu.addItem((it) => it.setTitle(estMarque(l) ? "Retirer la pastille" : "Marquer important").setIcon("circle-dot")
+        .onClick(() => this.basculerEditeur(editor, n)));
+    }));
+  }
+
+  // Ligne de tableau qui peut recevoir une pastille : pas l'en-tête, pas une ligne titre fusionnée,
+  // pas une ligne du tableau des examens, pas une ligne dont la première case est fusionnée avec celle du dessus
+  ligneTableauPossible(tr) {
+    if (tr.closest("thead") || tr.querySelector(".exam-emoji-inline-picker") || tr.closest("table.exam-filtrable")) return false;
+    const c = tr.cells[0];
+    if (!c || c.colSpan > 1) return false;
+    const txt = (c.textContent || "").trim();
+    if (!txt || txt === "^" || txt === "<" || c.style.display === "none") return false;
+    // Première colonne fusionnée sur plusieurs lignes (« ^ ») : les lignes couvertes n'ont pas leur propre première case
+    const rows = tr.closest("table").rows;
+    for (let i = tr.rowIndex - 1; i >= 0; i--) {
+      const c0 = rows[i].cells[0];
+      if (c0 && c0.rowSpan > 1 && i + c0.rowSpan > tr.rowIndex) return false;
+    }
+    return true;
+  }
+
+  // Puce du mode modification sous la souris (marge de gauche comprise), ou null
+  ligneEditeurSous(e) {
+    const t = e.target;
+    if (!(t instanceof Element) || !t.closest(".markdown-source-view")) return null;
+    const ok = (el) => el && !el.classList.contains("HyperMD-task-line") ? el : null;
+    const direct = t.closest(".cm-line.HyperMD-list-line");
+    if (direct) return ok(direct);
+    if (!t.closest(".cm-scroller")) return null;
+    // Souris dans la marge de gauche : on cherche la ligne un peu plus à droite, à la même hauteur
+    for (const dx of [20, 45, 70]) {
+      const sous = document.elementFromPoint(e.clientX + dx, e.clientY);
+      const l = sous && sous.closest(".cm-line.HyperMD-list-line");
+      if (l) return ok(l);
+    }
+    return null;
+  }
+
+  // Ligne de la note correspondant à l'élément affiché, et vue qui l'affiche
+  localiser(el) {
+    const view = this.app.workspace.getLeavesOfType("markdown").map((l) => l.view)
+      .find((v) => v instanceof MarkdownView && v.containerEl.contains(el));
+    if (!view || !view.file) return null;
+    const lu = this.lignesLecture.get(el);
+    if (lu) return { view, path: lu.path, line: lu.line };
+    const cm = view.editor && view.editor.cm;
+    if (!cm || !el.closest(".cm-editor")) return null;
+    try {
+      if (el.tagName === "TR") {
+        const widget = el.closest(".cm-table-widget");
+        if (!widget) return null;
+        const start = cm.state.doc.lineAt(cm.posAtDOM(widget)).number - 1;
+        return { view, path: view.file.path, line: el.rowIndex === 0 ? start : start + 1 + el.rowIndex };
+      }
+      return { view, path: view.file.path, line: cm.state.doc.lineAt(cm.posAtDOM(el)).number - 1 };
+    } catch (e) {
+      return null;
+    }
+  }
+
+  // Affichage immédiat, sans attendre qu'Obsidian redessine la note
+  afficher(el, allumer) {
+    if (el.tagName === "TR") {
+      const c = el.cells[0];
+      if (!c) return;
+      c.querySelectorAll(":scope > .pastille-fantome").forEach((f) => f.remove());
+      c.querySelectorAll(".pastille").forEach((p) => p.remove());
+      c.prepend(allumer ? createSpan({ cls: "pastille" }) : nouvelleFantome());
+    } else {
+      el.classList.toggle("pastille-on", allumer);
+      el.classList.toggle("pastille-off", !allumer);
+    }
+    this.flottante.style.display = "none";
+  }
+
+  async basculerElement(el) {
+    const pos = this.localiser(el);
+    if (!pos) return void new Notice("Ligne introuvable dans la note");
+    const marque = el.tagName === "TR" ? !!el.querySelector(".pastille") : el.dataset.task === "!" || el.classList.contains("pastille-on");
+    this.afficher(el, !marque);
+    // Mode modification : par l'éditeur (immédiat, annulable). Mode lecture : par le fichier
+    // (l'éditeur caché du mode lecture n'enregistre pas ses changements)
+    if (pos.view.getMode() === "source" && pos.view.editor) return void this.basculerEditeur(pos.view.editor, pos.line);
+    const file = this.app.vault.getAbstractFileByPath(pos.path);
+    if (!(file instanceof TFile)) return;
+    let ok = false;
+    await this.app.vault.process(file, (text) => {
+      const nl = text.includes("\r\n") ? "\r\n" : "\n";
+      const ls = text.split(/\r?\n/);
+      const neu = ls[pos.line] === undefined ? null : basculerLigne(ls[pos.line]);
+      if (neu === null) return text;
+      ls[pos.line] = neu;
+      ok = true;
+      return ls.join(nl);
+    });
+    if (!ok) new Notice("Pas de pastille possible sur cette ligne");
+  }
+
+  basculerEditeur(editor, n) {
+    const l = editor.getLine(n);
+    const neu = l === undefined ? null : basculerLigne(l);
+    if (neu === null) return void new Notice("Pas de pastille possible sur cette ligne");
+    const cm = editor.cm;
+    if (cm && cm.dispatch) {
+      const line = cm.state.doc.line(n + 1);
+      const top = cm.scrollDOM.scrollTop;
+      cm.dispatch({ changes: { from: line.from, to: line.to, insert: neu }, scrollIntoView: false });
+      requestAnimationFrame(() => (cm.scrollDOM.scrollTop = top));
+    } else editor.setLine(n, neu);
+  }
+};
+
+module.exports._test = { basculerLigne, estMarque };
+
+  return module.exports;
+})();
+
+// ===== Tableau des examens : valeurs basses en bleu, hautes en rouge (src/couleurs.js) =====
+const module_couleurs = (function () {
+  const module = { exports: {} };
+const { Plugin, TFile } = require("obsidian");
+
+// Tableau des examens : valeurs sous la norme en bleu, au-dessus en rouge (affichage seulement : rien n'est écrit
+// dans les notes, les copies ne changent pas).
+// Les normes viennent de la note « Générateur/Normes biologiques » (modifiable, relue à chaque changement) ;
+// sans cette note, celles de NORMES_DEFAUT ci-dessous.
+// Homme ou femme : lu dans la Synthèse de la note (« homme », « femme »). Inconnu : on ne colore que ce qui est
+// anormal pour les deux sexes.
+
+const CHEMIN_NORMES = "Générateur/Normes biologiques.md";
+
+const NORMES_DEFAUT = `Normes utilisées par le plugin Outils hospit pour colorer le tableau des examens : en bleu sous le minimum, en rouge au-dessus du maximum. Adultes, valeurs usuelles : à adapter aux normes de votre laboratoire, le plugin relit cette note à chaque modification.
+
+- Case vide : pas de limite de ce côté.
+- Plusieurs noms pour une même analyse : séparés par « / ».
+- Colonnes « femme » : utilisées quand la Synthèse de la note dit « femme » ; colonnes Min et Max quand elle dit « homme ». Sans l'un ou l'autre, seules les valeurs anormales pour les deux sexes sont colorées.
+- Unité : une valeur notée avec une autre unité dans le tableau des examens, « Fer (mg/L) » par exemple, n'est pas colorée.
+
+| Analyse | Min | Max | Min femme | Max femme | Unité |
+| --- | --- | --- | --- | --- | --- |
+| Hb / Hémoglobine | 13 | 17 | 12 | 16 | g/dL |
+| GB / Leucocytes | 4 | 10 |  |  | G/L |
+| PNN / Neutrophiles | 1.5 | 7 |  |  | G/L |
+| Lymphocytes | 1 | 4 |  |  | G/L |
+| Monocytes | 0.2 | 1 |  |  | G/L |
+| Éosinophiles | | 0.5 |  |  | G/L |
+| Basophiles | | 0.1 |  |  | G/L |
+| Plaquettes | 150 | 400 |  |  | G/L |
+| VGM | 80 | 100 |  |  | fL |
+| TCMH | 27 | 32 |  |  | pg |
+| CCMH | 32 | 36 |  |  | g/dL |
+| Réticulocytes | 20 | 120 |  |  | G/L |
+| Hématocrite / Ht | 40 | 52 | 37 | 47 | % |
+| TP | 70 | |  |  | % |
+| FII / FV / FVII / FX | 70 | |  |  | % |
+| TCA | | 1.2 |  |  |  |
+| Fibrinogène | 2 | 4 |  |  | g/L |
+| D-dimères | | 500 |  |  | ng/mL |
+| Na | 135 | 145 |  |  | mmol/L |
+| K | 3.5 | 5 |  |  | mmol/L |
+| Cl / Chlore | 98 | 107 |  |  | mmol/L |
+| Bicarbonates / HCO3 / Réserve alcaline | 22 | 29 |  |  | mmol/L |
+| Créatinine | 60 | 110 | 45 | 90 | µmol/L |
+| Urée | 2.5 | 7.5 |  |  | mmol/L |
+| DFG | 60 | |  |  | mL/min/1,73 m² |
+| Calcium / Calcémie / Calcium corrigé | 2.2 | 2.6 |  |  | mmol/L |
+| Phosphore | 0.8 | 1.45 |  |  | mmol/L |
+| Mg / Magnésium | 0.7 | 1.05 |  |  | mmol/L |
+| Osmolarité / Osmolalité | 280 | 300 |  |  | mOsm/kg |
+| Glycémie | 0.7 | 1.1 |  |  | g/L |
+| HbA1c | | 6 |  |  | % |
+| CRP | | 5 |  |  | mg/L |
+| PCT / Procalcitonine | | 0.5 |  |  | µg/L |
+| ASAT | | 40 |  |  | UI/L |
+| ALAT | | 45 |  | 35 | UI/L |
+| GGT | | 60 |  | 40 | UI/L |
+| PAL | 40 | 130 |  |  | UI/L |
+| Bilirubine / Bilirubine totale | | 21 |  |  | µmol/L |
+| Lipase | | 60 |  |  | UI/L |
+| LDH | | 250 |  |  | UI/L |
+| CPK | | 190 |  | 170 | UI/L |
+| Albumine | 35 | 50 |  |  | g/L |
+| Protéines / Protidémie | 60 | 80 |  |  | g/L |
+| Préalbumine | 0.2 | 0.4 |  |  | g/L |
+| Ferritine | 30 | 300 | 15 | 150 | µg/L |
+| Fer | 10 | 30 |  |  | µmol/L |
+| Transferrine | 2 | 3.6 |  |  | g/L |
+| CST | 20 | 40 |  |  | % |
+| Haptoglobine | 0.3 | 2 |  |  | g/L |
+| Acide urique / Uricémie | 150 | 420 | 140 | 340 | µmol/L |
+| B12 | 150 | 650 |  |  | pmol/L |
+| B9 / Folates | 4 | |  |  | ng/mL |
+| Vitamine D / 25-OH vitamine D | 75 | |  |  | nmol/L |
+| TSH | 0.4 | 4 |  |  | mUI/L |
+| T4L / T4 | 12 | 22 |  |  | pmol/L |
+| BNP | | 100 |  |  | ng/L |
+| NT-proBNP | | 450 |  |  | ng/L |
+| Lactates | | 2 |  |  | mmol/L |
+| Ammonium / Ammoniémie | | 50 |  |  | µmol/L |
+| pH | 7.35 | 7.45 |  |  |  |
+| pCO2 / PaCO2 | 35 | 45 |  |  | mmHg |
+| pO2 / PaO2 | 80 | |  |  | mmHg |
+| Cholestérol total | | 2 |  |  | g/L |
+| HDL | 0.4 | | 0.5 |  | g/L |
+| Triglycérides | | 1.5 |  |  | g/L |
+| PSA | | 4 |  |  | ng/mL |
+| IgG | 7 | 16 |  |  | g/L |
+| IgA | 0.7 | 4 |  |  | g/L |
+| IgM | 0.4 | 2.3 |  |  | g/L |
+`;
+
+// « Pré albumine », « Préalbumine », « PREALBUMINE » : même analyse
+const cle = (s) => (s || "").normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase().replace(/[^a-z0-9]/g, "");
+const cleUnite = (s) => (s || "").toLowerCase().replace(/\s/g, "").replace(/µ/g, "u");
+const nombre = (s) => {
+  const t = (s || "").trim().replace(",", ".");
+  return t === "" || isNaN(+t) ? null : +t;
+};
+
+// Tableau de la note des normes -> Map(clé du nom -> { min, max, minF, maxF, unite })
+function lireNormes(md) {
+  const normes = new Map();
+  const ls = md.split(/\r?\n/).filter((l) => /^\s*\|/.test(l));
+  const cells = (l) => l.trim().replace(/^\||\|$/g, "").split("|").map((c) => c.trim());
+  const h = ls.findIndex((l) => cells(l).some((c) => /^analyse$/i.test(c)));
+  if (h < 0) return normes;
+  const head = cells(ls[h]).map((c) => cle(c));
+  const col = (n) => head.indexOf(n);
+  const [iA, iMin, iMax, iMinF, iMaxF, iU] = ["analyse", "min", "max", "minfemme", "maxfemme", "unite"].map(col);
+  for (const l of ls.slice(h + 1)) {
+    if (/^\s*\|[\s|:-]+\|\s*$/.test(l)) continue;
+    const c = cells(l);
+    const n = { min: nombre(c[iMin]), max: nombre(c[iMax]), minF: nombre(c[iMinF]), maxF: nombre(c[iMaxF]), unite: iU >= 0 ? c[iU] || "" : "" };
+    for (const nom of (c[iA] || "").split("/")) if (cle(nom)) normes.set(cle(nom), n);
+  }
+  return normes;
+}
+
+// Bornes selon le sexe : « H », « F », ou inconnu (seules les valeurs anormales pour les deux sexes)
+function bornes(n, sexe) {
+  const minF = n.minF ?? n.min, maxF = n.maxF ?? n.max;
+  if (sexe === "F") return [minF, maxF];
+  if (sexe === "H") return [n.min, n.max];
+  const min = n.min === null ? minF : minF === null ? n.min : Math.min(n.min, minF);
+  const max = n.max === null ? maxF : maxF === null ? n.max : Math.max(n.max, maxF);
+  return [min, max];
+}
+
+// Valeur d'une case : « bas », « haut » ou "" ; « <1.1 » et « >90 » comptent comme des bornes, pas des valeurs exactes
+function niveau(texte, min, max) {
+  const m = (texte || "").trim().match(/^([<>≤≥])?\s*(-?\d+(?:[.,]\d+)?)/);
+  if (!m) return "";
+  const v = +m[2].replace(",", ".");
+  const signe = m[1] || "";
+  if (min !== null && (signe === "<" || signe === "≤" ? v <= min : signe === "" && v < min)) return "bas";
+  if (max !== null && (signe === ">" || signe === "≥" ? v >= max : signe === "" && v > max)) return "haut";
+  return "";
+}
+
+// Sexe écrit dans la Synthèse (avant le titre suivant) : « femme », « patiente », « Madame » / « homme », « Monsieur »
+function sexeDeLaNote(text) {
+  const ls = text.split(/\r?\n/);
+  const h = ls.findIndex((l) => /^#{1,6}\s.*Synth[eè]se/i.test(l));
+  if (h < 0) return "";
+  const fin = ls.findIndex((l, i) => i > h && /^#{1,6}\s/.test(l));
+  const s = ls.slice(h + 1, fin < 0 ? ls.length : fin).join(" ");
+  if (/\b(femme|patiente|madame|mme)\b/i.test(s)) return "F";
+  if (/\b(homme|monsieur)\b/i.test(s)) return "H";
+  return "";
+}
+
+// Microbiologie (☣️) et prélèvements (🫙) : résultat positif ? D'après le texte de la case :
+// « positif », un « + » (covid+, ++), « présence », ou un germe nommé sans négation. Pas « négatif », « stérile »…
+const NEGATION = /\bneg|negati|absen|sterile|pas de|aucun/;
+const POSITIF = /positi|presence|\+/;
+const GERME = /e\.? ?coli|escherichia|staph|strepto|pneumocoque|klebsiella|pseudomonas|enterocoque|enterobact|proteus|serratia|candida|aspergill|bgn|cgp|bacille|legionell|clostridi|covid|sars|grippe|influenza|vrs/;
+function positif(texte) {
+  const s = (texte || "").normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase();
+  if (!s.trim() || /en cours/.test(s)) return false;
+  if (POSITIF.test(s)) return true;
+  return GERME.test(s) && !NEGATION.test(s);
+}
+const CATEGORIES_MICRO = ["☣", "\u{1FAD9}"]; // ☣️ microbiologie, 🫙 prélèvement
+
+module.exports = class CouleursPlugin extends Plugin {
+  onload() {
+    this.normes = lireNormes(NORMES_DEFAUT);
+    this.sexes = new Map(); // chemin -> "H" | "F" | ""
+    const chargerNormes = async () => {
+      const f = this.app.vault.getAbstractFileByPath(CHEMIN_NORMES);
+      this.normes = lireNormes(f instanceof TFile ? await this.app.vault.cachedRead(f) : NORMES_DEFAUT);
+      this.toutColorer(true);
+    };
+    const changement = async (file) => {
+      if (!(file instanceof TFile)) return;
+      if (file.path === CHEMIN_NORMES) return void chargerNormes();
+      if (this.sexes.has(file.path)) {
+        const avant = this.sexes.get(file.path);
+        this.sexes.set(file.path, sexeDeLaNote(await this.app.vault.cachedRead(file)));
+        if (avant !== this.sexes.get(file.path)) this.toutColorer(true);
+      }
+    };
+    this.registerEvent(this.app.vault.on("modify", changement));
+    this.registerEvent(this.app.vault.on("create", changement));
+    this.registerEvent(this.app.vault.on("rename", (file) => file.path === CHEMIN_NORMES && chargerNormes()));
+    this.app.workspace.onLayoutReady(chargerNormes);
+
+    let attente = false;
+    const obs = new MutationObserver(() => {
+      if (attente) return;
+      attente = true;
+      requestAnimationFrame(() => {
+        attente = false;
+        this.toutColorer(false);
+      });
+    });
+    obs.observe(this.app.workspace.containerEl, { childList: true, subtree: true, characterData: true });
+    this.register(() => obs.disconnect());
+    this.register(() => document.querySelectorAll(".bio-bas, .bio-haut").forEach((c) => c.classList.remove("bio-bas", "bio-haut")));
+  }
+
+  sexeDe(path) {
+    if (this.sexes.has(path)) return this.sexes.get(path);
+    this.sexes.set(path, "");
+    const f = this.app.vault.getAbstractFileByPath(path);
+    if (f instanceof TFile) this.app.vault.cachedRead(f).then((t) => {
+      const s = sexeDeLaNote(t);
+      if (s) {
+        this.sexes.set(path, s);
+        this.toutColorer(true);
+      }
+    });
+    return "";
+  }
+
+  toutColorer(force) {
+    this.app.workspace.iterateAllLeaves((leaf) => {
+      const v = leaf.view;
+      if (!v || !v.file || !v.containerEl) return;
+      for (const table of v.containerEl.querySelectorAll("table")) this.colorer(table, v.file.path, force);
+    });
+  }
+
+  // Tableau des examens : en-tête avec une case « Examen » ; valeurs dans les colonnes à sa droite
+  colorer(table, path) {
+    const head = table.querySelector("thead tr") || table.rows[0];
+    if (!head) return;
+    const hc = [...head.cells];
+    const ex = hc.findIndex((c) => (c.textContent || "").trim() === "Examen");
+    if (ex < 0) return;
+    const sexe = this.sexeDe(path);
+    const full = hc.reduce((s, c) => s + (c.colSpan || 1), 0);
+    let cat = ""; // catégorie de la ligne : premier émoji trouvé, sinon celle du dessus (cases fusionnées)
+    for (const tr of table.querySelectorAll("tbody tr")) {
+      const cells = [...tr.cells];
+      // Lignes dont la 1re case est fusionnée avec celle du dessus : il leur manque des cases à gauche
+      const manque = full - cells.reduce((s, c) => s + (c.colSpan || 1), 0);
+      const i = ex - Math.max(0, manque);
+      // Émoji cherché dans le bouton et le nom seulement, pas dans les valeurs (🕐 en attente)
+      for (const c of cells.slice(0, i + 1)) {
+        const e = (c.textContent || "").match(/\p{Extended_Pictographic}/u);
+        if (e) {
+          cat = e[0];
+          break;
+        }
+      }
+      const micro = CATEGORIES_MICRO.includes(cat);
+      const brut = (cells[i] && cells[i].textContent) || "";
+      let nom = brut.replace(/[\p{Extended_Pictographic}️]/gu, "").trim();
+      let unite = "";
+      const m = nom.match(/^(.*?)\s*\(([^)]*)\)\s*$/);
+      if (m) [nom, unite] = [m[1], m[2]];
+      const n = this.normes.get(cle(nom));
+      const ok = n && !(unite && n.unite && cleUnite(unite) !== cleUnite(n.unite));
+      const [min, max] = ok ? bornes(n, sexe) : [null, null];
+      cells.forEach((c, j) => {
+        const v = j <= i ? "" : ok ? niveau(c.textContent, min, max) : micro && positif(c.textContent) ? "haut" : "";
+        c.classList.toggle("bio-bas", v === "bas");
+        c.classList.toggle("bio-haut", v === "haut");
+      });
+    }
+  }
+};
+
+module.exports._test = { positif, lireNormes, bornes, niveau, sexeDeLaNote, cle, NORMES_DEFAUT };
+
+  return module.exports;
+})();
+
+const { Modal, Plugin, apiVersion } = require("obsidian");
+
+// Un seul plugin : chaque module est chargé comme un enfant, et déchargé avec lui.
+// Un module qui plante au chargement n'empêche plus les autres ; la commande Diagnostic dit lequel et pourquoi.
 module.exports = class OutilsHospitPlugin extends Plugin {
   onload() {
-    for (const Module of [module_copier, module_examens, module_tableaux, module_filtres, module_replier]) {
-      this.addChild(new Module(this.app, this.manifest));
+    this.etatModules = [];
+    const modules = { copier: module_copier, examens: module_examens, tableaux: module_tableaux, filtres: module_filtres, replier: module_replier, pastilles: module_pastilles, couleurs: module_couleurs };
+    for (const [nom, Module] of Object.entries(modules)) {
+      const k = this.etatModules.push([nom, "chargé"]) - 1;
+      const echec = (err) => {
+        this.etatModules[k] = [nom, "ERREUR : " + (err && err.message ? err.message : err)];
+        console.error("Outils hospit, module " + nom, err);
+      };
+      // Chargé à la main plutôt que par addChild : le chargement d'un Plugin est asynchrone,
+      // son erreur arrive comme une promesse rejetée qu'addChild laisserait passer sans rien dire
+      try {
+        const child = new Module(this.app, this.manifest);
+        this.register(() => child.unload());
+        Promise.resolve(child.load()).catch(echec);
+      } catch (err) {
+        echec(err);
+      }
     }
+    this.addCommand({ id: "diagnostic", name: "Diagnostic", callback: () => this.diagnostic() });
+  }
+
+  diagnostic() {
+    const v = (typeof process !== "undefined" && process.versions) || {};
+    const lignes = [
+      "Outils hospit " + this.manifest.version + " (dossier " + this.manifest.dir + ")",
+      "Obsidian " + apiVersion + ", Electron " + (v.electron || "?") + ", Chrome " + (v.chrome || "?"),
+      "",
+      ...this.etatModules.map(([n, e]) => n + " : " + e),
+      "",
+    ];
+    const vue = this.app.workspace.getActiveFile();
+    const root = this.app.workspace.activeLeaf && this.app.workspace.activeLeaf.view.containerEl;
+    if (vue && root) {
+      const tables = [...root.querySelectorAll("table")];
+      const examens = tables.filter((t) => [...(t.querySelector("tr") || { children: [] }).children].some((c) => (c.textContent || "").trim() === "Examen"));
+      lignes.push("Note : " + vue.basename);
+      lignes.push("Tableaux affichés : " + tables.length + ", dont tableau des examens : " + examens.length);
+      lignes.push("Boutons de catégorie affichés : " + root.querySelectorAll(".exam-filtre-barre .exam-filtre-bouton").length);
+    }
+    const m = new Modal(this.app);
+    m.titleEl.setText("Outils hospit : diagnostic");
+    m.contentEl.createEl("pre", { text: lignes.join("\n") }).style.whiteSpace = "pre-wrap";
+    m.open();
   }
 };

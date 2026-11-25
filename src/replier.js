@@ -13,6 +13,64 @@ module.exports = class ReplierPlugin extends Plugin {
     this.app.workspace.onLayoutReady(addAll);
     this.registerEvent(this.app.workspace.on("layout-change", addAll));
     this.registerEvent(this.app.workspace.on("active-leaf-change", addAll));
+    this.garderPositionEntreModes();
+  }
+
+  // Passage lecture <-> modification : Obsidian perd la position sur les notes à gros tableaux
+  // (de la ligne 27 en lecture à la ligne 3 en modification, constaté même sans ce plugin).
+  // On retient la ligne affichée dans chaque mode, et après un changement de mode on y ramène la note.
+  garderPositionEntreModes() {
+    const etat = new WeakMap(); // vue -> { mode, ligne, retour }
+    const vueDe = (el) =>
+      this.app.workspace.getLeavesOfType("markdown").map((l) => l.view)
+        .find((v) => v instanceof MarkdownView && v.containerEl.contains(el));
+    const ramener = (v, s) => {
+      s.retour = performance.now() + 900; // pendant ce temps, les défilements d'Obsidian ne remplacent pas la ligne retenue
+      const mode = s.mode;
+      const ligne = s.ligne;
+      const appliquer = () => {
+        if (performance.now() > s.retour || v.getMode() !== mode) return; // l'utilisateur a repris la main
+        if (v.currentMode && v.currentMode.applyScroll) v.currentMode.applyScroll(ligne);
+      };
+      for (const t of [0, 60, 200, 450, 800]) setTimeout(appliquer, t);
+    };
+    // Molette, clavier ou clic de l'utilisateur : on arrête aussitôt de ramener la note
+    const reprise = () => {
+      for (const l of this.app.workspace.getLeavesOfType("markdown")) {
+        const s = etat.get(l.view);
+        if (s) s.retour = 0;
+      }
+    };
+    for (const type of ["wheel", "keydown", "pointerdown"]) this.registerDomEvent(document, type, reprise, { capture: true, passive: true });
+    const verifier = (v) => {
+      if (!(v instanceof MarkdownView) || !v.currentMode || !v.currentMode.getScroll) return;
+      const mode = v.getMode();
+      const fichier = v.file ? v.file.path : "";
+      const s = etat.get(v);
+      // Première fois, ou autre note ouverte dans le même onglet : on repart de la position actuelle
+      if (!s || s.fichier !== fichier) return void etat.set(v, { mode, fichier, ligne: v.currentMode.getScroll(), retour: 0 });
+      if (s.mode !== mode) {
+        // Changement de mode : on garde la ligne d'avant et on y ramène la note
+        s.mode = mode;
+        ramener(v, s);
+        return;
+      }
+      if (performance.now() > s.retour) s.ligne = v.currentMode.getScroll();
+    };
+    let attente = false;
+    this.registerDomEvent(document, "scroll", (e) => {
+      if (attente || !(e.target instanceof Element)) return;
+      attente = true;
+      requestAnimationFrame(() => {
+        attente = false;
+        const v = vueDe(e.target);
+        if (v) verifier(v);
+      });
+    }, { capture: true, passive: true });
+    // Changement de mode sans défilement : repéré au changement de disposition
+    this.registerEvent(this.app.workspace.on("layout-change", () => {
+      for (const l of this.app.workspace.getLeavesOfType("markdown")) verifier(l.view);
+    }));
   }
 
   onunload() {
