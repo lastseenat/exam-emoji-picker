@@ -223,13 +223,22 @@ module.exports = class ExamEmojiPickerPlugin extends Plugin {
         return;
       }
 
-      new ExamEmojiModal(this.app, (emoji) => {
-        const source = view.editor.getValue();
-        const updated = replaceExamButtonAt(source, targetIndex, emoji);
-        if (updated === source) {
-          new Notice("Le bouton d’examen est introuvable dans cette note.");
+      new ExamEmojiModal(this.app, async (emoji) => {
+        const introuvable = () => new Notice("Le bouton d’examen est introuvable dans cette note.");
+        // Mode lecture : par le fichier. L'éditeur caché du mode lecture garde l'ancien texte après une modification
+        // venue d'ailleurs (Sync, pastille) et n'enregistre pas ce qu'on y écrit
+        if (view.getMode() !== "source") {
+          let ok = false;
+          await this.app.vault.process(view.file, (text) => {
+            ok = targetIndex < (text.match(EXAM_BUTTON_PATTERN_GLOBAL) || []).length;
+            return ok ? replaceExamButtonAt(text, targetIndex, emoji) : text;
+          });
+          if (!ok) introuvable();
           return;
         }
+        const source = view.editor.getValue();
+        const updated = replaceExamButtonAt(source, targetIndex, emoji);
+        if (updated === source) return void introuvable();
 
         replaceKeepingView(view.editor, source, updated);
       }).open();

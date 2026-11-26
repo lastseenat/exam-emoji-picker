@@ -42,32 +42,73 @@ const estMarque = (line) => {
   return !!t && (t[1].includes(MARQUE) || t[1].includes("🔴"));
 };
 
+// ---------- Ligne de la note qui correspond à la ligne cliquée ----------
+// Le rang de la ligne affichée ne suffit pas : sur un PC du travail, le clic marquait la ligne du dessous
+// (rangée de plus dans le tableau affiché), et l'affichage immédiat cachait l'erreur jusqu'au tri suivant.
+// La ligne choisie doit donc avoir le même texte que la ligne cliquée ; sinon on prend la ligne de même texte
+// la plus proche, et à défaut on ne marque rien.
+
+const LIGNE_TABLEAU = /^\s*(?:>\s*)*\|/;
+const ENTITES = { amp: "&", lt: "<", gt: ">", quot: '"', "#39": "'", nbsp: " " };
+// Lettres et chiffres seulement : la source (markdown, balises, liens) et l'affichage deviennent comparables
+const comparable = (s) =>
+  (s || "")
+    .replace(MARQUE_RE, "")
+    .replace(/\[\[([^\]|]*)\|([^\]]*)\]\]/g, "$2")
+    .replace(/\[\[([^\]]*)\]\]/g, "$1")
+    .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")
+    .replace(/<br\s*\/?>/gi, " ")
+    .replace(/<[^>]*>/g, "")
+    .replace(/&(amp|lt|gt|quot|#39|nbsp);/gi, (m, e) => ENTITES[e.toLowerCase()])
+    .normalize("NFC")
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, "");
+
+// Texte d'une ligne de la note : première case d'une ligne de tableau, texte d'une puce (sans « - » ni case)
+function texteSource(line) {
+  if (LIGNE_TABLEAU.test(line)) {
+    const t = line.match(/^\s*(?:>\s*)*\|((?:\\\||[^|])*)/);
+    return comparable(t ? t[1] : "");
+  }
+  const m = line.match(PUCE);
+  return comparable(m ? line.slice(m[0].length) : line);
+}
+
+// Ligne de même texte que la ligne cliquée : le rang calculé s'il convient, sinon la plus proche de lui ; -1 si aucune
+function trouverLigne(lines, candidat, voulu, tableau) {
+  if (!voulu) return -1;
+  const ok = (i) => {
+    const l = lines[i];
+    if (l === undefined || !(tableau ? LIGNE_TABLEAU.test(l) : PUCE.test(l))) return false;
+    return texteSource(l) === voulu;
+  };
+  if (ok(candidat)) return candidat;
+  let best = -1;
+  for (let i = 0; i < lines.length; i++) {
+    if (ok(i) && (best < 0 || Math.abs(i - candidat) < Math.abs(best - candidat))) best = i;
+  }
+  return best;
+}
+
+// Texte affiché de la ligne cliquée (première case d'une ligne de tableau, texte propre d'une puce)
+function texteAffiche(el) {
+  const src = el.tagName === "TR" ? el.cells[0] : el;
+  if (!src) return "";
+  const c = src.cloneNode(true);
+  const retirer = ".pastille-fantome, .pastille, button, input, .jour-semaine, .table-row-drag-handle, .table-col-drag-handle, .list-collapse-indicator, .collapse-indicator";
+  c.querySelectorAll(el.tagName === "TR" ? retirer : retirer + ", ul, ol").forEach((x) => x.remove());
+  return comparable(c.textContent);
+}
+
 const nouvelleFantome = () => createSpan({ cls: "pastille-fantome", attr: { "aria-label": "Marquer important" } });
 
 module.exports = class PastillesPlugin extends Plugin {
   onload() {
-    this.lignesLecture = new WeakMap(); // élément affiché (li, tr) en mode lecture -> { path, line }
-
-    // Mode lecture : chaque puce et chaque ligne de tableau reçoit son numéro de ligne dans la note
+    // Mode lecture : bloc affiché -> son contexte, pour relire sa place dans la note au moment du clic
+    // (des lignes ajoutées plus haut décalent la note sans que le bloc soit redessiné)
+    this.sections = new WeakMap();
     this.registerMarkdownPostProcessor((el, ctx) => {
-      try {
-        const info = ctx.getSectionInfo(el);
-        if (!info) return;
-        const lines = info.text.split(/\r?\n/);
-        const items = [];
-        for (let i = info.lineStart; i <= info.lineEnd; i++) if (PUCE.test(lines[i] || "")) items.push(i);
-        [...el.querySelectorAll("li")].forEach((li, k) => {
-          if (items[k] !== undefined) this.lignesLecture.set(li, { path: ctx.sourcePath, line: items[k] });
-        });
-        let t0 = -1;
-        for (let i = info.lineStart; i <= info.lineEnd; i++) if (/^\s*(?:>\s*)*\|/.test(lines[i] || "")) { t0 = i; break; }
-        const table = el.querySelector("table");
-        if (t0 >= 0 && table) [...table.rows].forEach((tr, k) => {
-          if (k > 0) this.lignesLecture.set(tr, { path: ctx.sourcePath, line: t0 + 1 + k });
-        });
-      } catch (e) {
-        console.error("Outils hospit, pastilles", e);
-      }
+      this.sections.set(el, ctx);
     });
 
     // Pastilles grises posées d'avance (puces du mode lecture, lignes de tableau des deux modes)
@@ -202,29 +243,59 @@ module.exports = class PastillesPlugin extends Plugin {
     return null;
   }
 
-  // Ligne de la note correspondant à l'élément affiché, et vue qui l'affiche
+  // Place de la ligne cliquée dans la note : { view, path, candidat (rang calculé), voulu (texte affiché, à vérifier),
+  // tableau }, ou { exact } pour une ligne de l'éditeur, dont la position est donnée par l'éditeur lui-même
   localiser(el) {
     const view = this.app.workspace.getLeavesOfType("markdown").map((l) => l.view)
       .find((v) => v instanceof MarkdownView && v.containerEl.contains(el));
     if (!view || !view.file) return null;
-    const lu = this.lignesLecture.get(el);
-    if (lu) return { view, path: lu.path, line: lu.line };
-    const cm = view.editor && view.editor.cm;
-    if (!cm || !el.closest(".cm-editor")) return null;
+    const tableau = el.tagName === "TR";
+    // Rang parmi les lignes de données (corps du tableau) : une rangée d'en-tête en plus ne décale rien
+    const rangDonnee = () => (el.parentElement && el.parentElement.tagName === "TBODY" ? [...el.parentElement.rows].indexOf(el) : el.rowIndex - 1);
     try {
-      if (el.tagName === "TR") {
+      // Mode modification
+      const cm = view.editor && view.editor.cm;
+      if (cm && el.closest(".cm-editor")) {
+        const lines = cm.state.doc.toString().split("\n");
+        if (!tableau) return { view, path: view.file.path, exact: cm.state.doc.lineAt(cm.posAtDOM(el)).number - 1 };
         const widget = el.closest(".cm-table-widget");
         if (!widget) return null;
-        const start = cm.state.doc.lineAt(cm.posAtDOM(widget)).number - 1;
-        return { view, path: view.file.path, line: el.rowIndex === 0 ? start : start + 1 + el.rowIndex };
+        let h = cm.state.doc.lineAt(cm.posAtDOM(widget)).number - 1;
+        if (!LIGNE_TABLEAU.test(lines[h] || "") && LIGNE_TABLEAU.test(lines[h + 1] || "")) h++; // ligne d'avant le tableau
+        while (h > 0 && LIGNE_TABLEAU.test(lines[h - 1])) h--; // jusqu'à l'en-tête
+        return { view, path: view.file.path, candidat: h + 2 + rangDonnee(), voulu: texteAffiche(el), tableau };
       }
-      return { view, path: view.file.path, line: cm.state.doc.lineAt(cm.posAtDOM(el)).number - 1 };
+      // Mode lecture : bloc affiché qui contient la ligne, et sa place dans la note relue maintenant
+      let sec = el;
+      while (sec && !this.sections.has(sec)) sec = sec.parentElement;
+      if (!sec) return null;
+      const ctx = this.sections.get(sec);
+      const info = ctx.getSectionInfo(sec);
+      if (!info) return null;
+      const lines = info.text.split(/\r?\n/);
+      let candidat = -1;
+      if (tableau) {
+        for (let i = info.lineStart; i <= info.lineEnd; i++) if (LIGNE_TABLEAU.test(lines[i] || "")) { candidat = i + 2 + rangDonnee(); break; }
+      } else {
+        const puces = [];
+        for (let i = info.lineStart; i <= info.lineEnd; i++) if (PUCE.test(lines[i] || "")) puces.push(i);
+        const k = [...sec.querySelectorAll("li")].indexOf(el);
+        if (k >= 0 && puces[k] !== undefined) candidat = puces[k];
+      }
+      return { view, path: ctx.sourcePath, candidat, voulu: texteAffiche(el), tableau, lines };
     } catch (e) {
+      console.error("Outils hospit, pastilles", e);
       return null;
     }
   }
 
-  // Affichage immédiat, sans attendre qu'Obsidian redessine la note
+  // Ligne à basculer dans ce texte de la note, ou -1
+  ligneDans(pos, lines) {
+    if (pos.exact !== undefined) return pos.exact;
+    return trouverLigne(lines, pos.candidat, pos.voulu, pos.tableau);
+  }
+
+  // Mode lecture : affichage immédiat, sans attendre qu'Obsidian redessine la note (la ligne a déjà été vérifiée)
   afficher(el, allumer) {
     if (el.tagName === "TR") {
       const c = el.cells[0];
@@ -236,30 +307,41 @@ module.exports = class PastillesPlugin extends Plugin {
       el.classList.toggle("pastille-on", allumer);
       el.classList.toggle("pastille-off", !allumer);
     }
-    this.flottante.style.display = "none";
   }
 
   async basculerElement(el) {
+    this.flottante.style.display = "none";
     const pos = this.localiser(el);
-    if (!pos) return void new Notice("Ligne introuvable dans la note");
-    const marque = el.tagName === "TR" ? !!el.querySelector(".pastille") : el.dataset.task === "!" || el.classList.contains("pastille-on");
-    this.afficher(el, !marque);
-    // Mode modification : par l'éditeur (immédiat, annulable). Mode lecture : par le fichier
-    // (l'éditeur caché du mode lecture n'enregistre pas ses changements)
-    if (pos.view.getMode() === "source" && pos.view.editor) return void this.basculerEditeur(pos.view.editor, pos.line);
+    const introuvable = () => new Notice("Ligne introuvable dans la note : rien n'a été marqué");
+    if (!pos) return void introuvable();
+    // Mode modification : par l'éditeur (immédiat, annulable) ; l'éditeur redessine lui-même la ligne
+    if (pos.view.getMode() === "source" && pos.view.editor && el.closest(".cm-editor")) {
+      const n = this.ligneDans(pos, pos.view.editor.getValue().split("\n"));
+      if (n < 0) return void introuvable();
+      return void this.basculerEditeur(pos.view.editor, n);
+    }
+    // Mode lecture : par le fichier (l'éditeur caché du mode lecture n'enregistre pas ses changements)
+    const n = this.ligneDans(pos, pos.lines);
+    if (n < 0) return void introuvable();
+    this.afficher(el, !estMarque(pos.lines[n]));
     const file = this.app.vault.getAbstractFileByPath(pos.path);
     if (!(file instanceof TFile)) return;
     let ok = false;
     await this.app.vault.process(file, (text) => {
       const nl = text.includes("\r\n") ? "\r\n" : "\n";
       const ls = text.split(/\r?\n/);
-      const neu = ls[pos.line] === undefined ? null : basculerLigne(ls[pos.line]);
+      // Ligne recherchée de nouveau dans le fichier tel qu'il est au moment d'écrire
+      const k = this.ligneDans({ ...pos, candidat: n }, ls);
+      const neu = k < 0 ? null : basculerLigne(ls[k]);
       if (neu === null) return text;
-      ls[pos.line] = neu;
+      ls[k] = neu;
       ok = true;
       return ls.join(nl);
     });
-    if (!ok) new Notice("Pas de pastille possible sur cette ligne");
+    if (!ok) {
+      new Notice("Pas de pastille possible sur cette ligne");
+      if (pos.view.previewMode) pos.view.previewMode.rerender(true); // efface l'affichage immédiat
+    }
   }
 
   basculerEditeur(editor, n) {
@@ -276,4 +358,4 @@ module.exports = class PastillesPlugin extends Plugin {
   }
 };
 
-module.exports._test = { basculerLigne, estMarque };
+module.exports._test = { basculerLigne, estMarque, comparable, texteSource, trouverLigne };

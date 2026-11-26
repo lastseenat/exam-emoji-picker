@@ -23,3 +23,8 @@
   transform: translateY(-50%);
   z-index: 2;
 }
+
+/* Bouton Copier de la même case (tableau Traitement) : à gauche du bouton de tri, pas dessous */
+.cm-table-widget th:has(> .struck-rows-first-button.is-live) > .tableau-copier {
+  margin-inline-end: 24px;
+}

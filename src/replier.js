@@ -94,7 +94,7 @@ module.exports = class ReplierPlugin extends Plugin {
     // y compris la fin de la note qu'Obsidian n'a pas encore analysée ou affichée
     const mode = view.currentMode;
     if (mode && mode.applyFoldInfo && view.editor) {
-      const lines = view.editor.getValue().split("\n");
+      const lines = view.getViewData().split("\n"); // pas l'éditeur : périmé en mode lecture après une modification venue d'ailleurs
       const info = { folds: replie ? headingFolds(lines) : [], lines: lines.length };
       mode.applyFoldInfo(info);
       if (this.app.foldManager && view.file) this.app.foldManager.save(view.file, info);

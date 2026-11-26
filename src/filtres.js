@@ -134,14 +134,17 @@ function withUnit(v, unit) {
   return m[1] + " " + unit + m[2];
 }
 
-function dayText(ls, date) {
+// rang : quand plusieurs lignes portent la même date (jour et soir), 0 pour la première, 1 pour la suivante…
+function dayText(ls, date, rang = 0) {
   const h = ls.findIndex((l) => /^\s*\|/.test(l) && dateOf(mdCells(l)[0]) === "Date");
   if (h < 0) return "";
   const head = mdCells(ls[h]).map(label);
+  let vues = 0;
   for (let i = h + 1; i < ls.length && /^\s*\|/.test(ls[i]); i++) {
     if (isMdSep(ls[i])) continue;
     const c = mdCells(ls[i]);
     if (!date || dateOf(c[0]) !== date) continue;
+    if (vues++ < rang) continue;
     const parts = [];
     let cat = "";
     // Toutes les colonnes présentes, dans l'ordre, quel que soit leur nombre ; cases vides ou manquantes ignorées ; CAT toujours en dernier
@@ -291,11 +294,13 @@ function copyButton(cell, build, app, path) {
     e.preventDefault();
     e.stopPropagation();
     // Texte de la note affichée autour du bouton (même pas encore enregistré) ; sinon le fichier.
-    // Pas « le premier onglet de la note trouvé » : un autre onglet ou une autre fenêtre pouvait donner une version ancienne
+    // Pas « le premier onglet de la note trouvé » : un autre onglet ou une autre fenêtre pouvait donner une version ancienne.
+    // getViewData et pas l'éditeur : en mode lecture, l'éditeur caché garde l'ancien texte après une modification
+    // venue d'ailleurs (autre PC par Sync, pastille), et la copie donnait une version périmée
     let src = null;
     app.workspace.iterateAllLeaves((leaf) => {
       const v = leaf.view;
-      if (src === null && v && v.file && v.file.path === path && v.editor && v.containerEl.contains(btn)) src = v.editor.getValue();
+      if (src === null && v && v.file && v.file.path === path && v.getViewData && v.containerEl.contains(btn)) src = v.getViewData();
     });
     if (src === null) {
       const file = app.vault.getAbstractFileByPath(path);
@@ -448,7 +453,13 @@ module.exports = class ExamFiltresPlugin extends Plugin {
       for (const tr of table.querySelectorAll("tbody tr")) {
         const cell = tr.children[0];
         if (!cell) continue;
-        copyButton(cell, (ls) => dayText(ls, dateOf(texteCase(cell))), this.app, path);
+        // Date et rang relus au clic ; deux lignes du même jour : chacune copie la sienne (pas toujours la première)
+        copyButton(cell, (ls) => {
+          const date = dateOf(texteCase(cell));
+          const lignes = tr.parentElement ? [...tr.parentElement.children] : [tr];
+          const rang = lignes.slice(0, lignes.indexOf(tr)).filter((r) => r.children[0] && dateOf(texteCase(r.children[0])) === date).length;
+          return dayText(ls, date, rang);
+        }, this.app, path);
         // Jour de la semaine sous la date (affichage seulement, rien n'est écrit dans la note)
         const jour = jourSemaine(dateOf(texteCase(cell)));
         const ancien = cell.querySelector(":scope > .jour-semaine");
@@ -641,7 +652,7 @@ module.exports = class ExamFiltresPlugin extends Plugin {
       const view = this.app.workspace.getLeavesOfType("markdown").map((l) => l.view)
         .find((v) => v instanceof MarkdownView && v.file && v.file.path === path && v.containerEl.contains(btn));
       const file = this.app.vault.getAbstractFileByPath(path);
-      const src = view && view.editor ? view.editor.getValue() : file instanceof TFile ? await this.app.vault.read(file) : "";
+      const src = view && view.getViewData ? view.getViewData() : file instanceof TFile ? await this.app.vault.read(file) : "";
       const presents = new Set(src.split(/\r?\n/).filter(isTitleLine).map(partieRang));
       const menu = new Menu();
       PARTIES.forEach((p, rang) => {

@@ -82,13 +82,17 @@ li[data-task="!"],
 li.pastille-off > input.task-list-item-checkbox,
 .HyperMD-task-line.pastille-off input.task-list-item-checkbox { opacity: 0.25; }
 
-/* Mode modification : le texte de la case est dans un bloc à part ; la pastille grise est sortie du flux
-   et placée dans la marge gauche de la case, pour ne pas repousser le texte à la ligne */
-.cm-table-widget td:has(> .pastille-fantome) {
-  padding-inline-start: 1.2em;
-}
+/* Mode modification : la case n'a pas de marge intérieure, le texte est dans un bloc à part (marge de 8 px).
+   La pastille grise est sortie du flux (sinon elle repousse ce bloc à la ligne) et posée dans la case, à la place
+   de la pastille rouge : pas dans la marge de gauche du tableau, où Obsidian met sa poignée de déplacement de
+   ligne, qui prenait le clic. Le texte est décalé d'autant que sur une ligne marquée. */
 .cm-table-widget td > .pastille-fantome {
   position: absolute;
-  margin-inline-start: -0.95em;
-  margin-top: 0.55em;
+  left: var(--size-4-2, 8px);
+  top: calc(var(--size-2-2, 4px) + 0.45em);
+  margin: 0;
+  z-index: 1;
+}
+.cm-table-widget td:has(> .pastille-fantome) > .table-cell-wrapper {
+  padding-inline-start: calc(var(--size-4-2, 8px) + 1em) !important;
 }
